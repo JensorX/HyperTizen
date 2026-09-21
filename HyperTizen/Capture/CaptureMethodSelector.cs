@@ -8,12 +8,13 @@ namespace HyperTizen.Capture
 {
     /// <summary>
     /// Systematically tests all available capture methods and selects the best one
-    /// Tests in priority order: T8SDK (fastest) → T7SDK (fast) → PixelSampling (slowest)
+    /// Tests in priority order: Tizen 9 video → Tizen 9 display → T8/T7 compatibility → VideoEnhance.
     /// Thread-safe selection process with automatic cleanup of unused methods
     /// </summary>
     public class CaptureMethodSelector
     {
         private readonly List<ICaptureMethod> _methods;
+        private readonly HashSet<CaptureMethodType> _disabledTypes = new HashSet<CaptureMethodType>();
         private readonly object _selectionLock = new object();
         private ICaptureMethod _selectedMethod = null;
         private bool _hasSelectedMethod = false;
@@ -26,16 +27,21 @@ namespace HyperTizen.Capture
         {
             Helper.Log.Write(Helper.eLogType.Info, "CaptureMethodSelector: Initializing all capture methods");
 
-            _methods = new List<ICaptureMethod>
-            {
-                new T9VideoCaptureMethod(),      // Priority 5 (highest - Tizen 9 primary)
-                new T9DisplayCaptureMethod(),    // Priority 4 (high - Tizen 9 alternative)
-                new T8SdkCaptureMethod(),        // Priority 3 (medium - Tizen 8)
-                new T7SdkCaptureMethod(),        // Priority 2 (low - Tizen 7 and below)
-                new PixelSamplingCaptureMethod() // Priority 1 (lowest - fallback, works on all)
-            };
+            _methods = CreateMethods();
 
             Helper.Log.Write(Helper.eLogType.Info, $"CaptureMethodSelector: {_methods.Count} capture methods initialized");
+        }
+
+        private static List<ICaptureMethod> CreateMethods()
+        {
+            return new List<ICaptureMethod>
+            {
+                new T9VideoCaptureMethod(),      // Tizen 9 primary
+                new T9DisplayCaptureMethod(),    // Tizen 9 alternative
+                new T8SdkCaptureMethod(),        // Compatibility fallback
+                new T7SdkCaptureMethod(),        // Compatibility fallback
+                new PixelSamplingCaptureMethod() // VideoEnhance fallback
+            };
         }
 
         /// <summary>
@@ -56,8 +62,18 @@ namespace HyperTizen.Capture
             }
 
             Helper.Log.Write(Helper.eLogType.Info, "CaptureMethodSelector: Starting capture method selection");
-            Helper.Log.Write(Helper.eLogType.Info, $"Current Tizen version: {SDK.SystemInfo.TizenVersionMajor}.{SDK.SystemInfo.TizenVersionMinor}");
-            Helper.Log.Write(Helper.eLogType.Info, "Testing methods in priority order (T9Video → T9Display → T8SDK → T7SDK → PixelSampling)");
+            string tizenVersion = "unknown";
+            try
+            {
+                tizenVersion = $"{SDK.SystemInfo.TizenVersionMajor}.{SDK.SystemInfo.TizenVersionMinor}";
+            }
+            catch (Exception ex)
+            {
+                Helper.Log.Write(Helper.eLogType.Warning,
+                    $"CaptureMethodSelector: Could not read Tizen version: {ex.Message}");
+            }
+            Helper.Log.Write(Helper.eLogType.Info, $"Current Tizen version: {tizenVersion}");
+            Helper.Log.Write(Helper.eLogType.Info, "Testing methods in priority order (T9Video → T9Display → PixelSampling → T8SDK → T7SDK)");
 
             // Sort methods by priority (highest to lowest)
             var sortedMethods = _methods.OrderByDescending(m => m.Type).ToList();
@@ -68,6 +84,16 @@ namespace HyperTizen.Capture
             // Test each method in priority order
             foreach (var method in sortedMethods)
             {
+                lock (_selectionLock)
+                {
+                    if (_disabledTypes.Contains(method.Type))
+                    {
+                        Helper.Log.Write(Helper.eLogType.Info,
+                            $"CaptureMethodSelector: Skipping disabled method {method.Name}");
+                        continue;
+                    }
+                }
+
                 try
                 {
                     Helper.Log.Write(Helper.eLogType.Info,
@@ -215,6 +241,32 @@ namespace HyperTizen.Capture
         }
 
         /// <summary>
+        /// Permanently quarantine a method for the current service lifetime after
+        /// repeated native failures.  The next selection starts with the next
+        /// available fallback instead of retrying a broken ABI every frame.
+        /// </summary>
+        public void Disable(ICaptureMethod method)
+        {
+            if (method == null)
+            {
+                return;
+            }
+
+            lock (_selectionLock)
+            {
+                _disabledTypes.Add(method.Type);
+                if (_selectedMethod == method)
+                {
+                    _selectedMethod = null;
+                    _hasSelectedMethod = false;
+                }
+            }
+
+            Helper.Log.Write(Helper.eLogType.Warning,
+                $"CaptureMethodSelector: Disabled {method.Name} for this service lifetime");
+        }
+
+        /// <summary>
         /// Reset the selector and cleanup all methods
         /// Allows re-selection on next SelectBestMethod() call
         /// </summary>
@@ -242,6 +294,17 @@ namespace HyperTizen.Capture
                 _selectedMethod = null;
                 _hasSelectedMethod = false;
                 _methods.Clear();
+                foreach (var method in CreateMethods())
+                {
+                    if (!_disabledTypes.Contains(method.Type))
+                    {
+                        _methods.Add(method);
+                    }
+                    else
+                    {
+                        method.Cleanup();
+                    }
+                }
 
                 Helper.Log.Write(Helper.eLogType.Info,
                     "CaptureMethodSelector: Reset complete");

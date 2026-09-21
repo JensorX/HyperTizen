@@ -3,7 +3,7 @@
 
 let controlWS = null;
 let logsWS = null;
-let deviceIP = '';
+let deviceIP = '127.0.0.1';
 let logCount = 0;
 let ssdpDevices = [];
 let selectedDevices = new Set();
@@ -30,8 +30,8 @@ const Events = {
 
 // Initialize the application
 window.initializeApp = function(ip) {
-    deviceIP = ip;
-    addLog('Info', `Device IP: ${ip}`);
+    deviceIP = ip || '127.0.0.1';
+    addLog('Info', `HyperTizen service host: ${deviceIP}`);
 
     // Connect to control WebSocket
     connectControlWS();

@@ -4,347 +4,289 @@ using System.Runtime.InteropServices;
 namespace HyperTizen.Capture
 {
     /// <summary>
-    /// Tizen 9 display capture method using libdisplay-capture-api.so.0.0
-    /// Provides synchronous capture with built-in YUV→RGB conversion
-    /// Alternative to libvideo-capture.so
+    /// Tizen 9 display-capture fallback.
+    /// The API is optional and differs between TV firmware builds, therefore all
+    /// symbols are resolved through NativeLibraryProbe before they are called.
     /// </summary>
-    public class T9DisplayCaptureMethod : ICaptureMethod
+    public sealed class T9DisplayCaptureMethod : ICaptureMethod
     {
-        private bool _isInitialized = false;
-        private const int RTLD_LAZY = 1;
+        private const int MaxCaptureWidth = 3840;
+        private const int MaxCaptureHeight = 2160;
+        private const int MaxBufferBytes = 64 * 1024 * 1024;
 
-        public string Name => "T9 Display Capture (libdisplay-capture-api.so)";
+        private readonly object _captureLock = new object();
+        private IntPtr _libraryHandle;
+        private string _libraryPath;
+        private CaptureDelegate _capture;
+        private bool _isInitialized;
+        private IntPtr _buffer;
+        private int _bufferCapacity;
+        private byte[] _managedYData;
+        private byte[] _managedUVData;
+
+        public string Name => "T9 Display Capture (libdisplay-capture-api)";
         public CaptureMethodType Type => CaptureMethodType.T9DisplayCapture;
 
-        #region P/Invoke Declarations - Dynamic Library Loading
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int CaptureDelegate(
+            ref RequestData request, IntPtr yBuffer, IntPtr uvBuffer, int bufferSize);
 
-        [DllImport("libdl.so.2", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr dlopen(string filename, int flags);
-
-        [DllImport("libdl.so.2", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr dlsym(IntPtr handle, string symbol);
-
-        [DllImport("libdl.so.2", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int dlclose(IntPtr handle);
-
-        [DllImport("libdl.so.2", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr dlerror();
-
-        #endregion
-
-        #region P/Invoke Declarations - libdisplay-capture-api.so
-
-        // Main capture functions (C API)
-        [DllImport("/usr/lib/libdisplay-capture-api.so.0.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "dc_request_capture_sync")]
-        private static extern int dc_request_capture_sync_0_0(
-            ref RequestData request,
-            IntPtr yBuffer,
-            IntPtr uvBuffer,
-            int bufferSize);
-
-        [DllImport("/usr/lib/libdisplay-capture-api.so.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "dc_request_capture_sync")]
-        private static extern int dc_request_capture_sync_0(
-            ref RequestData request,
-            IntPtr yBuffer,
-            IntPtr uvBuffer,
-            int bufferSize);
-
-        [DllImport("/usr/lib/libdisplay-capture-api.so", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "dc_request_capture_sync")]
-        private static extern int dc_request_capture_sync(
-            ref RequestData request,
-            IntPtr yBuffer,
-            IntPtr uvBuffer,
-            int bufferSize);
-
-        // Async variant (if sync doesn't work)
-        [DllImport("/usr/lib/libdisplay-capture-api.so.0.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "dc_request_capture")]
-        private static extern int dc_request_capture_0_0(
-            ref RequestData request,
-            IntPtr yBuffer,
-            IntPtr uvBuffer,
-            int bufferSize);
-
-        [DllImport("/usr/lib/libdisplay-capture-api.so.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "dc_request_capture")]
-        private static extern int dc_request_capture_0(
-            ref RequestData request,
-            IntPtr yBuffer,
-            IntPtr uvBuffer,
-            int bufferSize);
-
-        [DllImport("/usr/lib/libdisplay-capture-api.so", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "dc_request_capture")]
-        private static extern int dc_request_capture(
-            ref RequestData request,
-            IntPtr yBuffer,
-            IntPtr uvBuffer,
-            int bufferSize);
-
-        #endregion
-
-        #region Native Structs
-
-        /// <summary>
-        /// Request data for display capture
-        /// Based on analysis of libdisplay-capture-api.so symbols
-        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         public struct RequestData
         {
-            public int width;               // Requested capture width
-            public int height;              // Requested capture height
-            public int format;              // Format (0 = YUV420, 1 = YUV422, etc.)
-            public int mode;                // Capture mode
-            public int reserved1;           // Reserved field
-            public int reserved2;           // Reserved field
+            public int width;
+            public int height;
+            public int format;
+            public int mode;
+            public int reserved1;
+            public int reserved2;
         }
-
-        #endregion
-
-        #region ICaptureMethod Implementation
 
         public bool IsAvailable()
         {
-            Helper.Log.Write(Helper.eLogType.Info, "[T9DisplayCaptureMethod] Checking availability...");
+            try
+            {
+                bool available = TryLoadNativeApi();
+                Helper.Log.Write(available ? Helper.eLogType.Info : Helper.eLogType.Warning,
+                    available
+                        ? $"[T9DisplayCaptureMethod] API available via {_libraryPath}"
+                        : "[T9DisplayCaptureMethod] No display capture API found");
+                return available;
+            }
+            catch (Exception ex)
+            {
+                Helper.Log.Write(Helper.eLogType.Warning,
+                    $"[T9DisplayCaptureMethod] Availability probe failed: {ex.Message}");
+                Cleanup();
+                return false;
+            }
+        }
 
-            // Test library loading
-            string[] libraryPaths = new string[]
+        public bool Test()
+        {
+            Helper.Log.Write(Helper.eLogType.Info,
+                "[T9DisplayCaptureMethod] Testing 1920x1080 native capture");
+            try
+            {
+                if (!TryLoadNativeApi() || !EnsureBuffer(1920, 1080))
+                {
+                    return false;
+                }
+
+                CaptureResult result = CaptureInternal(1920, 1080);
+                if (result.Success)
+                {
+                    _isInitialized = true;
+                    Helper.Log.Write(Helper.eLogType.Info,
+                        $"[T9DisplayCaptureMethod] Test passed: {result.Width}x{result.Height}");
+                    return true;
+                }
+
+                Helper.Log.Write(Helper.eLogType.Warning,
+                    $"[T9DisplayCaptureMethod] Test failed ({result.NativeErrorCode}): {result.ErrorMessage}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Helper.Log.Write(Helper.eLogType.Error,
+                    $"[T9DisplayCaptureMethod] Test exception: {ex.Message}");
+                return false;
+            }
+        }
+
+        public CaptureResult Capture(int width, int height)
+        {
+            if (!_isInitialized || _capture == null)
+            {
+                return CaptureResult.CreateFailure("Tizen 9 display capture is not initialized", 0, Name);
+            }
+
+            try
+            {
+                return CaptureInternal(width, height);
+            }
+            catch (Exception ex)
+            {
+                Helper.Log.Write(Helper.eLogType.Error,
+                    $"[T9DisplayCaptureMethod] Capture exception: {ex.Message}");
+                return CaptureResult.CreateFailure($"Native capture exception: {ex.Message}", -99, Name);
+            }
+        }
+
+        private CaptureResult CaptureInternal(int width, int height)
+        {
+            lock (_captureLock)
+            {
+                if (!EnsureBuffer(width, height))
+                {
+                    return CaptureResult.CreateFailure("Invalid or oversized display capture dimensions", 0, Name);
+                }
+
+                int ySize = checked(width * height);
+                int uvSize = checked(ySize / 2);
+                RequestData request = new RequestData
+                {
+                    width = width,
+                    height = height,
+                    format = 0,
+                    mode = 0,
+                    reserved1 = 0,
+                    reserved2 = 0
+                };
+
+                int nativeResult = _capture(
+                    ref request,
+                    _buffer,
+                    IntPtr.Add(_buffer, ySize),
+                    _bufferCapacity);
+
+                if (nativeResult != 0 && nativeResult != 4)
+                {
+                    if (nativeResult == -4)
+                    {
+                        return CaptureResult.CreateFailure(
+                            "DRM protected content - capture is intentionally unavailable",
+                            nativeResult, Name);
+                    }
+                    if (nativeResult == -95)
+                    {
+                        return CaptureResult.CreateFailure(
+                            "Operation not supported on this Tizen firmware; trying fallback",
+                            nativeResult, Name);
+                    }
+                    return CaptureResult.CreateFailure(
+                        $"Tizen 9 display capture failed with native code {nativeResult}",
+                        nativeResult, Name);
+                }
+
+                if (_managedYData == null || _managedYData.Length != ySize)
+                {
+                    _managedYData = new byte[ySize];
+                }
+                if (_managedUVData == null || _managedUVData.Length != uvSize)
+                {
+                    _managedUVData = new byte[uvSize];
+                }
+                Marshal.Copy(_buffer, _managedYData, 0, ySize);
+                Marshal.Copy(IntPtr.Add(_buffer, ySize), _managedUVData, 0, uvSize);
+                return CaptureResult.CreateSuccess(
+                    _managedYData, _managedUVData, width, height, width, width,
+                    "NV12", nativeResult, Name);
+            }
+        }
+
+        private bool TryLoadNativeApi()
+        {
+            if (_libraryHandle != IntPtr.Zero && _capture != null)
+            {
+                return true;
+            }
+
+            CleanupNativeApi();
+            string[] libraryPaths =
             {
                 "/usr/lib/libdisplay-capture-api.so.0.0",
                 "/usr/lib/libdisplay-capture-api.so.0",
                 "/usr/lib/libdisplay-capture-api.so"
             };
 
-            foreach (var libPath in libraryPaths)
+            foreach (string path in libraryPaths)
             {
-                IntPtr handle = dlopen(libPath, RTLD_LAZY);
-                if (handle != IntPtr.Zero)
+                IntPtr handle = NativeLibraryProbe.Open(path);
+                if (handle == IntPtr.Zero)
                 {
-                    Helper.Log.Write(Helper.eLogType.Info, $"[T9DisplayCaptureMethod] Library loaded: {libPath}");
-
-                    // Check for entry points
-                    string[] entryPoints = new string[]
-                    {
-                        "dc_request_capture_sync",
-                        "dc_request_capture"
-                    };
-
-                    bool foundEntryPoint = false;
-                    foreach (var entryPoint in entryPoints)
-                    {
-                        IntPtr symbol = dlsym(handle, entryPoint);
-                        if (symbol != IntPtr.Zero)
-                        {
-                            Helper.Log.Write(Helper.eLogType.Info, $"[T9DisplayCaptureMethod] ✓ Found entry point: {entryPoint}");
-                            foundEntryPoint = true;
-                        }
-                    }
-
-                    dlclose(handle);
-
-                    if (foundEntryPoint)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Info, "[T9DisplayCaptureMethod] Available!");
-                        return true;
-                    }
+                    continue;
                 }
-                else
+
+                IntPtr address = NativeLibraryProbe.Symbol(handle, "dc_request_capture_sync");
+                if (address == IntPtr.Zero)
                 {
-                    // Get detailed error information
-                    IntPtr errorPtr = dlerror();
-                    string dlError = errorPtr != IntPtr.Zero
-                        ? Marshal.PtrToStringAnsi(errorPtr)
-                        : null;
+                    NativeLibraryProbe.Close(ref handle);
+                    continue;
+                }
 
-                    // Check if file exists
-                    bool fileExists = System.IO.File.Exists(libPath);
-
-                    // Build detailed error message
-                    string errorMsg = $"[T9DisplayCaptureMethod] dlopen() failed for {libPath}";
-                    if (!fileExists)
-                    {
-                        errorMsg += " - File does not exist";
-                    }
-                    else if (dlError != null)
-                    {
-                        errorMsg += $" - {dlError}";
-                    }
-                    else
-                    {
-                        errorMsg += " - dlopen returned NULL but dlerror() also returned NULL (possible permission issue or invalid ELF format)";
-                    }
-
-                    Helper.Log.Write(Helper.eLogType.Warning, errorMsg);
+                try
+                {
+                    _capture = Marshal.GetDelegateForFunctionPointer<CaptureDelegate>(address);
+                    _libraryHandle = handle;
+                    _libraryPath = path;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Helper.Log.Write(Helper.eLogType.Warning,
+                        $"[T9DisplayCaptureMethod] Cannot bind capture API: {ex.Message}");
+                    NativeLibraryProbe.Close(ref handle);
                 }
             }
 
-            Helper.Log.Write(Helper.eLogType.Warning, "[T9DisplayCaptureMethod] Not available");
             return false;
         }
 
-        public bool Test()
+        private bool EnsureBuffer(int width, int height)
         {
-            Helper.Log.Write(Helper.eLogType.Info, "[T9DisplayCaptureMethod] Running capture test...");
-
-            try
+            if (width <= 0 || height <= 0 || width > MaxCaptureWidth || height > MaxCaptureHeight)
             {
-                // Test with small resolution
-                int testWidth = 1920;
-                int testHeight = 1080;
-                int ySize = testWidth * testHeight;
-                int uvSize = ySize / 2; // NV12 format
-                int totalSize = ySize + uvSize;
-
-                IntPtr buffer = Marshal.AllocHGlobal(totalSize);
-                IntPtr yBuffer = buffer;
-                IntPtr uvBuffer = IntPtr.Add(buffer, ySize);
-
-                try
-                {
-                    RequestData request = new RequestData
-                    {
-                        width = testWidth,
-                        height = testHeight,
-                        format = 0,     // YUV420
-                        mode = 0,       // Normal mode
-                        reserved1 = 0,
-                        reserved2 = 0
-                    };
-
-                    int result = CallDisplayCaptureSync(ref request, yBuffer, uvBuffer, totalSize);
-
-                    Helper.Log.Write(Helper.eLogType.Info, $"[T9DisplayCaptureMethod] dc_request_capture_sync returned: {result}");
-
-                    if (result == 0 || result == 4)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Info, "[T9DisplayCaptureMethod] ✓ Test PASSED");
-                        _isInitialized = true;
-                        return true;
-                    }
-                    else if (result == -4)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "[T9DisplayCaptureMethod] Error -4 (DRM protected content)");
-                        return false;
-                    }
-                    else if (result == -95)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "[T9DisplayCaptureMethod] Error -95 (Operation not supported)");
-                        return false;
-                    }
-                    else
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, $"[T9DisplayCaptureMethod] ✗ Test FAILED with code: {result}");
-                        return false;
-                    }
-                }
-                finally
-                {
-                    Marshal.FreeHGlobal(buffer);
-                }
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, $"[T9DisplayCaptureMethod] Test exception: {ex.Message}");
                 return false;
             }
-        }
 
-        private int CallDisplayCaptureSync(ref RequestData request, IntPtr yBuffer, IntPtr uvBuffer, int bufferSize)
-        {
-            // Try all three library versions
+            long required = (long)width * height * 3 / 2;
+            if (required <= 0 || required > MaxBufferBytes)
+            {
+                return false;
+            }
+            if (_buffer != IntPtr.Zero && _bufferCapacity >= required)
+            {
+                return true;
+            }
+
+            IntPtr newBuffer = IntPtr.Zero;
             try
             {
-                return dc_request_capture_sync_0_0(ref request, yBuffer, uvBuffer, bufferSize);
+                newBuffer = Marshal.AllocHGlobal((int)required);
+                if (_buffer != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(_buffer);
+                }
+                _buffer = newBuffer;
+                _bufferCapacity = (int)required;
+                return true;
             }
             catch
             {
-                try
+                if (newBuffer != IntPtr.Zero)
                 {
-                    return dc_request_capture_sync_0(ref request, yBuffer, uvBuffer, bufferSize);
+                    Marshal.FreeHGlobal(newBuffer);
                 }
-                catch
-                {
-                    return dc_request_capture_sync(ref request, yBuffer, uvBuffer, bufferSize);
-                }
-            }
-        }
-
-        public CaptureResult Capture(int width, int height)
-        {
-            if (!_isInitialized)
-            {
-                return CaptureResult.CreateFailure("Not initialized - call Test() first");
-            }
-
-            try
-            {
-                int ySize = width * height;
-                int uvSize = ySize / 2; // NV12 format
-                int totalSize = ySize + uvSize;
-
-                IntPtr buffer = Marshal.AllocHGlobal(totalSize);
-                IntPtr yBuffer = buffer;
-                IntPtr uvBuffer = IntPtr.Add(buffer, ySize);
-
-                try
-                {
-                    RequestData request = new RequestData
-                    {
-                        width = width,
-                        height = height,
-                        format = 0,     // YUV420
-                        mode = 0,       // Normal mode
-                        reserved1 = 0,
-                        reserved2 = 0
-                    };
-
-                    int result = CallDisplayCaptureSync(ref request, yBuffer, uvBuffer, totalSize);
-
-                    if (result == 0 || result == 4)
-                    {
-                        // Copy to managed arrays
-                        byte[] yData = new byte[ySize];
-                        byte[] uvData = new byte[uvSize];
-
-                        Marshal.Copy(yBuffer, yData, 0, ySize);
-                        Marshal.Copy(uvBuffer, uvData, 0, uvSize);
-
-                        return CaptureResult.CreateSuccess(yData, uvData, width, height);
-                    }
-                    else if (result == -4)
-                    {
-                        return CaptureResult.CreateFailure("DRM protected content - cannot capture");
-                    }
-                    else if (result == -95)
-                    {
-                        return CaptureResult.CreateFailure("Operation not supported (firmware block)");
-                    }
-                    else
-                    {
-                        return CaptureResult.CreateFailure($"Capture failed with code: {result}");
-                    }
-                }
-                finally
-                {
-                    Marshal.FreeHGlobal(buffer);
-                }
-            }
-            catch (Exception ex)
-            {
-                return CaptureResult.CreateFailure($"Exception: {ex.Message}");
+                return false;
             }
         }
 
         public void Cleanup()
         {
-            Helper.Log.Write(Helper.eLogType.Info, "[T9DisplayCaptureMethod] Cleanup");
-            _isInitialized = false;
+            lock (_captureLock)
+            {
+                _isInitialized = false;
+                CleanupNativeApi();
+                if (_buffer != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(_buffer);
+                    _buffer = IntPtr.Zero;
+                }
+                _bufferCapacity = 0;
+                _managedYData = null;
+                _managedUVData = null;
+            }
         }
 
-        #endregion
+        private void CleanupNativeApi()
+        {
+            _capture = null;
+            _libraryPath = null;
+            if (_libraryHandle != IntPtr.Zero)
+            {
+                NativeLibraryProbe.Close(ref _libraryHandle);
+            }
+        }
     }
 }

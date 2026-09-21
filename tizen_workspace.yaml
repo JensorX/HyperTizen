@@ -3,13 +3,13 @@ auto_gen_build_files: true
 #  Workspace type, [native/web/dotnet]
 type: hybrid
 #  Package ID for the Tizen package
-package_id: 
+package_id: io.gh.reisxd.HyperTizen
 #  version for the Tizen package
-version: 
+version: 2.0.0
 #  Default profile
 profile: tv-samsung
 #  Tizen API version
-api_version: 6.5
+api_version: 9.0
 #  Path of profiles.xml, containing the signing profiles 
  # If value is empty, the profiles.xml in the data_path specified in tizen-studio/tools/tizen-core/config.yaml will be used
 profiles_xml_path: C:/tizen-studio-data/profile/profiles.xml
@@ -72,7 +72,7 @@ chrome_inspector_options:
 #  Default path for Web Inspector data
 chrome_inspector_data_path: C:\tizen-studio-data\chrome-user-data
 #  default arch for build, [x86/ x86_64/ arm/ aarch64]
-arch: x86
+arch: arm
 #  Enable size optimization of wgt for web workspace
 opt: false
 #  Source files matching these pattern will always be excluded from build
@@ -83,6 +83,7 @@ test_file_patterns:
 - _test*
 #  List of projects in the workspace and their dependencies
 projects:
-  HyperTizen: []
+  HyperTizenUI:
+  - HyperTizen
 #  Skip generating files needed for VS
 skip_vs_files: false

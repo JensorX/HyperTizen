@@ -151,7 +151,13 @@ namespace HyperTizen
             }
         }
 
-        public static async Task SendImageAsync(byte[] yData, byte[] uvData, int width, int height)
+        public static Task SendImageAsync(byte[] yData, byte[] uvData, int width, int height)
+        {
+            return SendImageAsync(yData, uvData, width, height, width, width);
+        }
+
+        public static async Task SendImageAsync(byte[] yData, byte[] uvData, int width, int height,
+            int strideY, int strideUV)
         {
             // ENHANCED NULL SAFETY: Check client validity before proceeding
             try
@@ -209,7 +215,7 @@ namespace HyperTizen
                 return;
             }
 
-            byte[] message = CreateFlatBufferMessage(yData, uvData, width, height);
+            byte[] message = CreateFlatBufferMessage(yData, uvData, width, height, strideY, strideUV);
             if (message == null)
             {
                 Helper.Log.Write(Helper.eLogType.Error, "SendImageAsync: ❌ CreateFlatBufferMessage returned null");
@@ -220,7 +226,8 @@ namespace HyperTizen
             // Validation above ensures buffers are correct before sending
             _ = SendMessageAndReceiveReplyAsync(message);
         }
-        static byte[] CreateFlatBufferMessage(byte[] yData, byte[] uvData, int width, int height)
+        static byte[] CreateFlatBufferMessage(byte[] yData, byte[] uvData, int width, int height,
+            int strideY, int strideUV)
         {
             // ENHANCED NULL SAFETY: Detailed checks with logging
             try
@@ -284,8 +291,17 @@ namespace HyperTizen
             }
 
             // CRITICAL: Validate buffer sizes match NV12 format
-            int expectedYSize = width * height;
-            int expectedUVSize = (width * height) / 2;
+            strideY = strideY > 0 ? strideY : width;
+            strideUV = strideUV > 0 ? strideUV : width;
+            if (strideY < width || strideUV < width)
+            {
+                Helper.Log.Write(Helper.eLogType.Error,
+                    $"CreateFlatBufferMessage: Invalid strides ({strideY}, {strideUV}) for {width}x{height}");
+                return null;
+            }
+
+            int expectedYSize = strideY * height;
+            int expectedUVSize = strideUV * (height / 2);
 
             if (yData.Length != expectedYSize)
             {
@@ -311,8 +327,8 @@ namespace HyperTizen
             NV12Image.AddDataUv(builder, uvVector);
             NV12Image.AddWidth(builder, width);
             NV12Image.AddHeight(builder, height);
-            NV12Image.AddStrideY(builder, width);  //TODO: Check if this is correct
-            NV12Image.AddStrideUv(builder, width);
+            NV12Image.AddStrideY(builder, strideY);
+            NV12Image.AddStrideUv(builder, strideUV);
             var nv12Image = NV12Image.EndNV12Image(builder);
 
             Image.StartImage(builder);

@@ -1,42 +1,67 @@
-# HyperTizen
+# HyperTizen – Build und Installation
 
-HyperTizen is a Hyperion / HyperHDR capturer for Tizen TVs.
+HyperTizen wird für Tizen 9 als ein signiertes Hybrid-WGT gebaut. Das Paket enthält:
 
-# Installation
+- die sichtbare Web-App `io.gh.reisxd.HyperTizenUI`,
+- den nativen .NET-Service `io.gh.reisxd.HyperTizen`,
+- die gemeinsame Package-ID `io.gh.reisxd.HyperTizen`.
 
-To install HyperTizen, you need to have a Samsung TV (Tizen).
+Die Web-App startet den Service beim Öffnen mit Tizen Application Control. Eine separate TizenBrew-Installation oder ein externer Launcher ist nicht mehr erforderlich.
 
-You'll need Tizen Studio to install the app on your TV. You can download it from the [official website](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html).
+## Voraussetzungen
 
-1. Download the latest release from the [releases page](https://github.com/reisxd/HyperTizen/releases/latest).
+- Samsung-TV mit Tizen 9,
+- Tizen Studio mit Web-, .NET- und TV-Komponenten,
+- aktiviertes Developer Mode am TV,
+- gültiges Samsung-TV-Signing-Profil,
+- Hyperion/HyperHDR im selben Netzwerk,
+- echter Tizen-9-TV für Capture- und Performance-Tests.
 
-2. Change the Host PC IP address to your PC's IP address by following [this](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html#Connecting-the-TV-and-SDK)
+## Workspace
 
-3. Install the package:
+[`../tizen_workspace.yaml`](../tizen_workspace.yaml) ist als `hybrid` konfiguriert und listet `HyperTizenUI` mit dem abhängigen Serviceprojekt `HyperTizen`. Das Ziel ist API 9 und ARM.
+
+Die Web-App-Konfiguration liegt in [`../HyperTizenUI/config.xml`](../HyperTizenUI/config.xml), die native Service-Konfiguration in [`../HyperTizen/HyperTizen/tizen-manifest.xml`](../HyperTizen/tizen-manifest.xml).
+
+## Bauen und Signieren
+
+Das exakte Kommando hängt von der Tizen-Studio-Version und dem aktiven Profil ab. Allgemein:
+
 ```bash
-tizen install -n path/to/io.gh.reisxd.HyperTizen.tpk
+dotnet build HyperTizen/HyperTizen.csproj -c Release
+# Hybrid-Workspace mit dem aktiven Profil als .wgt paketieren und signieren
 ```
 
-Note that `tizen` is in `C:\tizen-studio\tools\ide\bin` on Windows and in `~/tizen-studio/tools/ide/bin` on Linux.
+Die Ausgabe muss ein gemeinsames `.wgt` sein, nicht ein separates `.tpk` plus eine TizenBrew-App. Installation:
 
-If you get `install failed[118, -12], reason: Check certificate error` error, you'll have to resign the package.
-
-4. Install TizenBrew to your TV. Follow [this](https://github.com/reisxd/TizenBrew/blob/main/docs/README.md) guide.
-
-5. Add `reisxd/HyperTizen/HyperTizenUI` as a GitHub module to the module manager. You can access the module manager by pressing the [GREEN] button on the remote.
-
-## Resigning the package
-
-1. Change the Host PC IP address to your PC's IP address by following [this](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html#Connecting-the-TV-and-SDK)
-
-2. After following the guide for the Tizen Studio installation, you have to create a certificate profile. You can follow [this guide](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html).
-
-3. Sign the package:
 ```bash
-tizen package -t tpk -s YourProfileName -o path/to/output/dir -- path/to/io.gh.reisxd.HyperTizen.tpk
-
-# Example:
-# tizen package -t tpk -s HyperTizen -o release -- io.gh.reisxd.HyperTizen.tpk
+tizen install -n path/to/io.gh.reisxd.HyperTizen.wgt
 ```
 
-4. You should now be able to install the package.
+Danach die Kachel **HyperTizen** starten.
+
+## Diagnose nach der Installation
+
+- Lokaler Health-Handshake: `http://127.0.0.1:45677/health`
+- Steuerung: `ws://<TV-IP>:45677`
+- Logs: `http://<TV-IP>:45678`
+- Browser-Control-Panel: `controls.html`
+
+Der Health-Endpunkt liefert Service-State, aktive Capture-Methode, Tizen-Version, letzten Fehler und die verwendeten Ports. Die UI wartet auf `ready=true`, bevor sie WebSockets verbindet.
+
+## Lifecycle-Hinweise
+
+Der Service ist eine native Tizen-Service-Anwendung. Samsung unterstützt explizites Starten eines Service aus einer UI im selben Paket. Auto-Restart und Boot-Ausführung hängen von TV-Modell und Zertifikatsstufe ab; deshalb startet die UI den Service beim Öffnen nochmals explizit. Wird die UI beendet, läuft der Service unabhängig weiter.
+
+## Capture-Abnahme
+
+Die Capture-Priorität ist:
+
+1. `libvideo-capture.so.0.1.0`
+2. `libdisplay-capture-api.so.0.0`
+3. T8-/T7-Kompatibilität
+4. `libvideoenhance.so`
+
+Native Bibliotheken werden vor der Verwendung geprüft. Buffer werden wiederverwendet, Strides bis zu FlatBuffers weitergegeben und nach drei aufeinanderfolgenden nativen Fehlern wird auf die nächste Methode gewechselt. `-4` bedeutet erwarteten DRM-Schutz; `-95` bedeutet fehlende Firmware-Unterstützung.
+
+Freigabekriterien: mindestens 10 FPS bei 480×270, 30 Minuten ohne Crash oder kontinuierliches Speicherwachstum und gültige NV12-Frames mit nicht geschützten Quellen. Emulatoren sind dafür nicht ausreichend.

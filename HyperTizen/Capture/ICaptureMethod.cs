@@ -48,9 +48,9 @@ namespace HyperTizen.Capture
     /// </summary>
     public enum CaptureMethodType
     {
-        PixelSampling = 1,      // Lowest priority (fallback, slow but works on all Tizen 8+)
-        T7SDK = 2,              // Low priority (fast, works on Tizen 7 and below)
-        T8SDK = 3,              // Medium priority (fast, works on some Tizen 8 models)
+        T7SDK = 1,              // Lowest compatibility fallback
+        T8SDK = 2,              // Compatibility fallback
+        PixelSampling = 3,      // VideoEnhance fallback on Tizen 9
         T9DisplayCapture = 4,   // High priority (libdisplay-capture-api.so - alternative T9 API)
         T9VideoCapture = 5      // Highest priority (libvideo-capture.so.0.1.0 - primary T9 API)
     }

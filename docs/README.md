@@ -40,6 +40,12 @@ tizen install -n path/to/io.gh.reisxd.HyperTizen.wgt
 
 Danach die Kachel **HyperTizen** starten.
 
+### GitHub Actions
+
+Der Workflow [`../.github/workflows/build-hypertizen-wgt.yml`](../.github/workflows/build-hypertizen-wgt.yml) erstellt das signierte Standalone-WGT bei Pushes auf `main`, `v*.*.*`-Tags oder über `workflow_dispatch`. Er verwendet die GitHub-Umgebungsvariablen `GITHUB_WORKSPACE`, `GITHUB_SHA`, `GITHUB_REF_NAME` und `RUNNER_TEMP` sowie die Repository-Secrets `TIZEN_AUTHOR_KEY` und `TIZEN_AUTHOR_KEY_PW`.
+
+`TIZEN_AUTHOR_KEY` muss die Base64-kodierte Tizen-Author-`.p12` enthalten. Der Workflow kompiliert den Service mit dem Tizen-.NET-SDK, setzt die Hybrid-Struktur (`bin`, `info/manifest.xml`, `res/wgt`, `shared`) zusammen und signiert ein einziges `HyperTizen-<version>-<sha>.wgt` mit `tizen.js`. Das Ergebnis steht als Actions-Artefakt bereit; ein `v*.*.*`-Tag erzeugt zusätzlich ein GitHub Release.
+
 ## Diagnose nach der Installation
 
 - Lokaler Health-Handshake: `http://127.0.0.1:45677/health`

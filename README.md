@@ -80,6 +80,12 @@ dotnet build HyperTizen/HyperTizen.csproj -c Release
 
 Die exakten Build-Schritte hängen von der installierten Tizen-Studio-Version und dem Signing-Profil ab. In dieser Entwicklungsumgebung sind `tizen`, `dotnet` und ein echter TV nicht verfügbar; deshalb kann hier kein signiertes WGT und keine Hardwarefreigabe erzeugt werden.
 
+### GitHub Actions
+
+Der Workflow [`build-hypertizen-wgt.yml`](.github/workflows/build-hypertizen-wgt.yml) baut bei `main`, bei `v*.*.*`-Tags oder manuell ein gemeinsames Hybrid-WGT. Er kompiliert den .NET-Service, legt den nativen Teil unter `bin`/`info` und die UI unter `res/wgt` ab und signiert anschließend das Ergebnis mit `tizen.js`.
+
+Dafür müssen im Repository die Actions-Secrets `TIZEN_AUTHOR_KEY` (Base64-kodierte `.p12`-Datei) und `TIZEN_AUTHOR_KEY_PW` (Passwort) hinterlegt sein. Das WGT wird als Actions-Artefakt veröffentlicht; bei einem Versionstag wird zusätzlich ein GitHub Release angelegt. Distributor-Zertifikate werden wie im TizenTube-Workflow über `--privilege public` von `tizen.js` bezogen.
+
 ## Debugging
 
 1. Service über die HyperTizen-Kachel starten.

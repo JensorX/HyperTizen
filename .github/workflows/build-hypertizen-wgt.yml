@@ -1,0 +1,178 @@
+name: Build HyperTizen standalone WGT
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_VERSION: '6.0.x'
+  TIZENJS_PACKAGE: 'https://github.com/reisxd/tizen.js/tarball/main'
+  PACKAGE_ID: io.gh.reisxd.HyperTizen
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Determine package version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          config_version=$(sed -n 's/.*<widget[^>]*version="\([^"]*\)".*/\1/p' HyperTizenUI/config.xml | head -n1)
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            build_version="${GITHUB_REF_NAME#v}"
+          else
+            build_version="$config_version"
+          fi
+
+          if [[ ! "$build_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid Tizen package version: $build_version" >&2
+            exit 1
+          fi
+
+          echo "BUILD_VERSION=$build_version" >> "$GITHUB_ENV"
+          echo "RELEASE_SHA=${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "RELEASE_SHA_SHORT=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+          echo "WGT_NAME=HyperTizen-${build_version}-${GITHUB_SHA:0:7}.wgt" >> "$GITHUB_ENV"
+          echo "HYPERTIZEN_STAGE=${RUNNER_TEMP}/hypertizen-hybrid" >> "$GITHUB_ENV"
+          echo "HYPERTIZEN_RELEASE=${RUNNER_TEMP}/hypertizen-release" >> "$GITHUB_ENV"
+          echo "TIZEN_AUTHOR_CERT=${GITHUB_WORKSPACE}/.hypertizen-author.p12" >> "$GITHUB_ENV"
+
+      - name: Validate sources
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -f tizen_workspace.yaml
+          test -f HyperTizenUI/config.xml
+          test -f HyperTizen/tizen-manifest.xml
+          grep -q 'type: hybrid' tizen_workspace.yaml
+          grep -q 'api_version: 9.0' tizen_workspace.yaml
+          grep -q 'arch: arm' tizen_workspace.yaml
+          grep -q "package=\"${PACKAGE_ID}\"" HyperTizenUI/config.xml
+          grep -q "package=\"${PACKAGE_ID}\"" HyperTizen/tizen-manifest.xml
+
+      - name: Build native service assemblies
+        run: |
+          set -euo pipefail
+          dotnet build HyperTizen/HyperTizen.csproj \
+            --configuration Release \
+            --nologo \
+            -p:TizenCreateTpkOnBuild=false
+
+      - name: Prepare hybrid package root
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$HYPERTIZEN_STAGE" "$HYPERTIZEN_RELEASE"
+          mkdir -p \
+            "$HYPERTIZEN_STAGE/bin" \
+            "$HYPERTIZEN_STAGE/info" \
+            "$HYPERTIZEN_STAGE/lib" \
+            "$HYPERTIZEN_STAGE/res/wgt" \
+            "$HYPERTIZEN_STAGE/shared" \
+            "$HYPERTIZEN_RELEASE"
+
+          native_output=$(find HyperTizen/bin/Release -type f -name 'HyperTizen.dll' -printf '%h\n' | head -n1)
+          if [[ -z "$native_output" ]]; then
+            echo 'The Tizen .NET build did not produce HyperTizen.dll' >&2
+            exit 1
+          fi
+
+          cp -a "$native_output/." "$HYPERTIZEN_STAGE/bin/"
+          cp -a HyperTizen/shared/. "$HYPERTIZEN_STAGE/shared/"
+          cp HyperTizen/tizen-manifest.xml "$HYPERTIZEN_STAGE/info/manifest.xml"
+          cp -a HyperTizenUI/. "$HYPERTIZEN_STAGE/res/wgt/"
+
+          if [[ -d HyperTizen/lib ]]; then
+            cp -a HyperTizen/lib/. "$HYPERTIZEN_STAGE/lib/"
+          fi
+          if [[ -d HyperTizen/res ]]; then
+            cp -a HyperTizen/res/. "$HYPERTIZEN_STAGE/res/"
+          fi
+
+          sed -E -i \
+            "s/(version=\")([0-9]+\.[0-9]+\.[0-9]+)/\1${BUILD_VERSION}/" \
+            "$HYPERTIZEN_STAGE/res/wgt/config.xml"
+          sed -E -i \
+            "s/(version=\")([0-9]+\.[0-9]+\.[0-9]+)/\1${BUILD_VERSION}/" \
+            "$HYPERTIZEN_STAGE/info/manifest.xml"
+
+          test -f "$HYPERTIZEN_STAGE/bin/HyperTizen.dll"
+          test -f "$HYPERTIZEN_STAGE/info/manifest.xml"
+          test -f "$HYPERTIZEN_STAGE/res/wgt/config.xml"
+          test -f "$HYPERTIZEN_STAGE/res/wgt/index.html"
+
+      - name: Prepare Tizen author certificate
+        shell: bash
+        env:
+          TIZEN_AUTHOR_KEY: ${{ secrets.TIZEN_AUTHOR_KEY }}
+        run: |
+          set -euo pipefail
+          : "${TIZEN_AUTHOR_KEY:?Missing repository secret TIZEN_AUTHOR_KEY}"
+          printf '%s' "$TIZEN_AUTHOR_KEY" | base64 --decode > "$TIZEN_AUTHOR_CERT"
+          chmod 600 "$TIZEN_AUTHOR_CERT"
+
+      - name: Install tizen.js packaging CLI
+        run: npm install --global "$TIZENJS_PACKAGE"
+
+      - name: Sign standalone hybrid WGT
+        shell: bash
+        env:
+          TIZEN_AUTHOR_KEY_PW: ${{ secrets.TIZEN_AUTHOR_KEY_PW }}
+        run: |
+          set -euo pipefail
+          : "${TIZEN_AUTHOR_KEY_PW:?Missing repository secret TIZEN_AUTHOR_KEY_PW}"
+
+          (
+            cd "$HYPERTIZEN_STAGE"
+            tizenjs build . \
+              --type wgt \
+              --output "$HYPERTIZEN_RELEASE/$WGT_NAME" \
+              --author "$TIZEN_AUTHOR_CERT" \
+              --authorPwd "$TIZEN_AUTHOR_KEY_PW" \
+              --privilege public \
+              --ignore node_modules,/.*\\.wgt$/,/release/,/.git/
+          )
+
+          unzip -l "$HYPERTIZEN_RELEASE/$WGT_NAME" | grep -q 'info/manifest.xml'
+          unzip -l "$HYPERTIZEN_RELEASE/$WGT_NAME" | grep -q 'res/wgt/config.xml'
+          unzip -l "$HYPERTIZEN_RELEASE/$WGT_NAME" | grep -q 'bin/HyperTizen.dll'
+
+      - name: Upload standalone WGT artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.WGT_NAME }}
+          path: ${{ env.HYPERTIZEN_RELEASE }}/${{ env.WGT_NAME }}
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ env.RELEASE_SHA }}
+          files: ${{ env.HYPERTIZEN_RELEASE }}/${{ env.WGT_NAME }}
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$TIZEN_AUTHOR_CERT"

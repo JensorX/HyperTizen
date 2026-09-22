@@ -75,15 +75,15 @@ Für einen lokalen Build werden die Tizen-Core-CLI, das Tizen-.NET-9-SDK und ein
 ```bash
 tz build --proj-dir "$PWD/HyperTizenUI" --build-type Release --sign-profile hypertizen-ci
 tz pack --proj-dir "$PWD/HyperTizenUI" --type wgt \
-   --out-path "$PWD/HyperTizenUI.wgt" \
    --profiles-path "$PWD/profiles.xml" \
    --sign-profile hypertizen-ci
+WEB_WGT="$PWD/HyperTizenUI/Release/HyperTizenUI.wgt"
 dotnet build HyperTizen/HyperTizen.csproj -c Release \
    -p:TizenCreateTpkOnBuild=true
 SERVICE_TPK=$(find "$PWD/HyperTizen/bin/Release" -type f -name '*.tpk' -print -quit)
 
 tz sign-pack hybrid \
-   --web-pkg "$PWD/HyperTizenUI.wgt" \
+   --web-pkg "$WEB_WGT" \
    --dotnet-pkg "$SERVICE_TPK" \
    --final-pkg "$PWD/HyperTizen-2.0.0.wgt" \
    --profiles-path "$PWD/profiles.xml" \

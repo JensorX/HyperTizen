@@ -159,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -rf "$HYPERTIZEN_RELEASE"
+          rm -rf "$HYPERTIZEN_RELEASE" "$GITHUB_WORKSPACE/HyperTizenUI/Release"
           mkdir -p "$HYPERTIZEN_RELEASE"
 
           tz build \
@@ -167,13 +167,21 @@ jobs:
             --build-type Release \
             --sign-profile "$TIZEN_SIGN_PROFILE"
 
-          WEB_PACKAGE="$HYPERTIZEN_RELEASE/$WEB_WGT_NAME"
           tz pack \
             --proj-dir "$GITHUB_WORKSPACE/HyperTizenUI" \
             --type wgt \
-            --out-path "$WEB_PACKAGE" \
             --profiles-path "$TIZEN_PROFILES_XML" \
             --sign-profile "$TIZEN_SIGN_PROFILE"
+
+          mapfile -t web_packages < <(find "$GITHUB_WORKSPACE/HyperTizenUI/Release" -maxdepth 1 -type f -name '*.wgt' -print)
+          if [[ "${#web_packages[@]}" -ne 1 ]]; then
+            printf 'Expected exactly one Web WGT, found %s\n' "${#web_packages[@]}" >&2
+            printf '%s\n' "${web_packages[@]}" >&2
+            exit 1
+          fi
+
+          WEB_PACKAGE="$HYPERTIZEN_RELEASE/$WEB_WGT_NAME"
+          cp "${web_packages[0]}" "$WEB_PACKAGE"
 
           dotnet build HyperTizen/HyperTizen.csproj \
             --configuration Release \

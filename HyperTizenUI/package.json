@@ -1,11 +1,12 @@
 {
   "name": "hypertizen-ui",
   "appName": "HyperTizen Control Center",
-  "version": "2.0.0",
-  "description": "HyperTizen Control Center hybrid Web UI for Samsung Tizen 9 TVs.",
-  "packageType": "hybrid-web-ui",
+  "version": "1.2.0",
+  "description": "HyperTizen Control Center - Advanced UI for Hyperion/HyperHDR screen capture on Tizen 8+ TVs with remote control, live logs, and SSDP device management.",
+  "packageType": "app",
   "appPath": "index.html",
-  "author": "Reis Can (original), HyperTizen contributors",
+  "author": "Reis Can (original), iceteaSA (Tizen 8+ fork)",
+  "serviceFile": "js/service.js",
   "keys": [],
   "repository": {
     "url": "https://github.com/iceteaSA/HyperTizen"

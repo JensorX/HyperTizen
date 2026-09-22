@@ -14,11 +14,12 @@ namespace HyperTizen
             base.OnCreate();
 
             // STEP 1: Load preferences FIRST (before any testing)
-            if (!Preference.Contains("enabled")) Preference.Set("enabled", "true");
-            if (!Preference.Contains("diagnosticMode"))
-            {
-                Preference.Set("diagnosticMode", Globals.DIAGNOSTIC_MODE_ENABLED ? "true" : "false");
-            }
+            if (!Preference.Contains("enabled")) Preference.Set("enabled", "false");
+
+            // CRITICAL: Force diagnostic mode based on build constant
+            // This OVERRIDES any saved preference to ensure build const is respected
+            // Set Globals.DIAGNOSTIC_MODE_ENABLED = true in code to enable diagnostic mode
+            Preference.Set("diagnosticMode", Globals.DIAGNOSTIC_MODE_ENABLED ? "true" : "false");
 
             // STEP 2: Initialize Globals with preferences
             Globals.Instance.LoadPreferencesEarly();
@@ -105,22 +106,6 @@ namespace HyperTizen
         protected override void OnAppControlReceived(AppControlReceivedEventArgs e)
         {
             base.OnAppControlReceived(e);
-
-            // The visible Web application explicitly starts this service. Reply to
-            // the launch request so it can begin polling /health immediately.
-            try
-            {
-                ReceivedAppControl received = e.ReceivedAppControl;
-                if (received != null && received.IsReplyRequest)
-                {
-                    received.ReplyToLaunchRequest(new AppControl(), AppControlReplyResult.Succeeded);
-                }
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Warning,
-                    $"Could not reply to UI launch request: {ex.Message}");
-            }
         }
 
         protected override void OnDeviceOrientationChanged(DeviceOrientationEventArgs e)
@@ -171,21 +156,8 @@ namespace HyperTizen
         }
         public static class Configuration
         {
-            public static string RPCServer
-            {
-                get { return Preference.Contains("rpcServer") ? Preference.Get<string>("rpcServer") : null; }
-                set { Preference.Set("rpcServer", value ?? string.Empty); }
-            }
-
-            public static bool Enabled
-            {
-                get
-                {
-                    string value = Preference.Contains("enabled") ? Preference.Get<string>("enabled") : "true";
-                    return bool.TryParse(value, out bool enabled) && enabled;
-                }
-                set { Preference.Set("enabled", value ? "true" : "false"); }
-            }
+            public static string RPCServer = Preference.Contains("rpcServer") ? Preference.Get<string>("rpcServer") : null;
+            public static bool Enabled = bool.Parse(Preference.Get<string>("enabled"));
         }
     }
 }

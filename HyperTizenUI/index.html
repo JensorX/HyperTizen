@@ -132,7 +132,7 @@
         <!-- Footer -->
         <div class="footer">
             <div class="footer-info">
-                <span id="versionInfo">HyperTizen UI v... | Tizen 9 Hybrid</span>
+                <span id="versionInfo">HyperTizen UI v... | Tizen 8.0+ Fork</span>
                 <span class="separator">•</span>
                 <span id="wsStatus">WebSocket: Disconnected</span>
             </div>
@@ -150,7 +150,7 @@
                 .then(pkg => {
                     const versionInfo = document.getElementById('versionInfo');
                     if (versionInfo) {
-                        versionInfo.textContent = `HyperTizen UI v${pkg.version} | Tizen 9 Hybrid`;
+                        versionInfo.textContent = `HyperTizen UI v${pkg.version} | Tizen 8.0+ Fork`;
                     }
                 })
                 .catch(err => {
@@ -158,93 +158,12 @@
                     // Fallback to hardcoded version
                     const versionInfo = document.getElementById('versionInfo');
                     if (versionInfo) {
-                        versionInfo.textContent = 'HyperTizen UI v2.0.0 | Tizen 9 Hybrid';
+                        versionInfo.textContent = 'HyperTizen UI v1.2.0 | Tizen 8.0+ Fork';
                     }
                 });
         }
 
-        const SERVICE_APP_ID = 'io.gh.reisxd.HyperTizen';
-        const SERVICE_HEALTH_URL = 'http://127.0.0.1:45677/health';
-
-        function launchNativeService() {
-            return new Promise((resolve) => {
-                try {
-                    const control = new tizen.ApplicationControl(
-                        'http://tizen.org/appcontrol/operation/default'
-                    );
-
-                    tizen.application.launchAppControl(
-                        control,
-                        SERVICE_APP_ID,
-                        function () {
-                            console.log('HyperTizen service launch requested');
-                            resolve();
-                        },
-                        function (error) {
-                            // Some TV firmware exposes the explicit native service
-                            // through launch() but not launchAppControl(). Keep the
-                            // direct launch as a compatibility fallback.
-                            console.warn('launchAppControl failed: ' + error.message);
-                            try {
-                                tizen.application.launch(
-                                    SERVICE_APP_ID,
-                                    function () { resolve(); },
-                                    function () { resolve(); }
-                                );
-                            } catch (fallbackError) {
-                                console.warn('Native service launch failed: ' + fallbackError.message);
-                                resolve();
-                            }
-                        }
-                    );
-                } catch (error) {
-                    console.warn('Could not create service launch request: ' + error.message);
-                    resolve();
-                }
-            });
-        }
-
-        function waitForService(attempt) {
-            const currentAttempt = attempt || 0;
-            const timeout = new Promise((resolve, reject) => {
-                setTimeout(() => reject(new Error('health request timed out')), 1500);
-            });
-
-            return Promise.race([
-                fetch(SERVICE_HEALTH_URL, { cache: 'no-store' }),
-                timeout
-            ])
-                .then(response => {
-                    if (!response.ok) throw new Error('service health returned ' + response.status);
-                    return response.json();
-                })
-                .then(health => {
-                    if (!health.ready) throw new Error('service is still starting');
-                    return health;
-                })
-                .catch(error => {
-                    if (currentAttempt >= 80) {
-                        throw error;
-                    }
-                    return new Promise(resolve => setTimeout(resolve, 250))
-                        .then(() => waitForService(currentAttempt + 1));
-                });
-        }
-
-        async function startHyperTizen() {
-            try {
-                await launchNativeService();
-                const health = await waitForService(0);
-                console.log('HyperTizen service ready: ' + JSON.stringify(health));
-                initializeApp('127.0.0.1');
-            } catch (error) {
-                console.error('HyperTizen service is not ready:', error);
-                addLog('Error', 'HyperTizen service is not ready. Retrying...');
-                setTimeout(startHyperTizen, 3000);
-            }
-        }
-
-        // Initialize the application and start the native service in the same package.
+        // Initialize the application
         window.onload = function () {
             // Load version from package.json
             loadVersion();
@@ -252,7 +171,18 @@
             // Focus management for remote control
             setupFocusManagement();
 
-            startHyperTizen();
+            // Get device IP and initialize WebSocket connections
+            fetch('http://127.0.0.1:8081')
+                .then(res => res.text())
+                .then(ip => {
+                    window.deviceIP = ip;
+                    initializeApp(ip);
+                })
+                .catch(err => {
+                    console.error('Failed to get device IP:', err);
+                    addLog('Error', 'Failed to get device IP. Retrying...');
+                    setTimeout(() => location.reload(), 3000);
+                });
         };
 
         function setupFocusManagement() {

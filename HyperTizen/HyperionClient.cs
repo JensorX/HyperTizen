@@ -62,7 +62,6 @@ namespace HyperTizen
         // Capture statistics
         private long _framesCaptured = 0;
         private int _errorCount = 0;
-        private int _consecutiveNativeCaptureFailures = 0;
         private string _lastError = null;
         private DateTime _startTime;
         private List<double> _fpsHistory = new List<double>();
@@ -100,16 +99,6 @@ namespace HyperTizen
                     _serviceState = value;
                 }
             }
-        }
-
-        public string SelectedCaptureMethodName
-        {
-            get { return _selectedCaptureMethod?.Name; }
-        }
-
-        public bool IsRunning
-        {
-            get { return _isRunning; }
         }
 
         public async Task Start()
@@ -220,8 +209,6 @@ namespace HyperTizen
                 // Continue with normal startup flow
                 _framesCaptured = 0;
                 _errorCount = 0;
-                _consecutiveNativeCaptureFailures = 0;
-                _lastError = null;
                 _fpsHistory.Clear();
 
                 // Create new cancellation token source
@@ -280,11 +267,14 @@ namespace HyperTizen
                             Helper.Log.Write(Helper.eLogType.Info,
                                 $"CAPTURE METHOD SELECTED: {_selectedCaptureMethod.Name}");
 
-                            // Respect the user's persisted preference. A first install
-                            // defaults to enabled in HyperTizen_App.OnCreate(), while a
-                            // deliberate Stop action must remain stopped after restart.
-                            Helper.Log.Write(Helper.eLogType.Info,
-                                $"Capture preference loaded: enabled={Globals.Instance.Enabled}");
+                            // Automatically enable capturing now that we have a working method
+                            // This ensures the capture loop will run even if preferences have Enabled=false
+                            if (!Globals.Instance.Enabled)
+                            {
+                                Helper.Log.Write(Helper.eLogType.Info,
+                                    "Auto-enabling capture (was disabled in preferences)");
+                                Globals.Instance.Enabled = true;
+                            }
                         }
                     }
                     catch (Exception ex)
@@ -466,34 +456,11 @@ namespace HyperTizen
 
                         if(isConnected)
                         {
-                            // Select/reselect a capture method when the previous
-                            // native ABI was quarantined after repeated failures.
+                            // Validate capture method is available
                             if (_selectedCaptureMethod == null)
                             {
-                                if (_captureSelector == null)
-                                {
-                                    _captureSelector = new CaptureMethodSelector();
-                                }
-
-                                Helper.Log.Write(Helper.eLogType.Warning,
-                                    "No active capture method; selecting the next available fallback");
-                                _selectedCaptureMethod = _captureSelector.SelectBestMethod();
-                                if (_selectedCaptureMethod == null)
-                                {
-                                    Helper.Log.Write(Helper.eLogType.Error,
-                                        "Cannot capture: No capture method is currently available");
-                                    await Task.Delay(2000, _cancellationTokenSource.Token);
-                                    _captureSelector.Reset();
-                                    continue;
-                                }
-
-                                Helper.Log.Write(Helper.eLogType.Info,
-                                    $"Fallback capture method selected: {_selectedCaptureMethod.Name}");
-                                _consecutiveNativeCaptureFailures = 0;
-                            }
-
-                            if (_selectedCaptureMethod == null)
-                            {
+                                Helper.Log.Write(Helper.eLogType.Error,
+                                    "Cannot capture: No capture method selected!");
                                 await Task.Delay(2000, _cancellationTokenSource.Token);
                                 continue;
                             }
@@ -523,9 +490,7 @@ namespace HyperTizen
                                         captureResult.YData,
                                         captureResult.UVData,
                                         captureResult.Width,
-                                        captureResult.Height,
-                                        captureResult.StrideY,
-                                        captureResult.StrideUV);
+                                        captureResult.Height);
                                 }
                                 catch (NullReferenceException ex)
                                 {
@@ -550,7 +515,6 @@ namespace HyperTizen
 
                                 // Reset error counter on success
                                 consecutiveErrors = 0;
-                                _consecutiveNativeCaptureFailures = 0;
                             }
                             else
                             {
@@ -559,22 +523,6 @@ namespace HyperTizen
                                 Helper.Log.Write(Helper.eLogType.Warning,
                                     $"Capture failed: {errorMsg}");
                                 consecutiveErrors++;
-                                _errorCount++;
-                                _lastError = errorMsg;
-
-                                if (captureResult != null && captureResult.NativeErrorCode != 0)
-                                {
-                                    _consecutiveNativeCaptureFailures++;
-                                    if (_consecutiveNativeCaptureFailures >= 3)
-                                    {
-                                        QuarantineCaptureMethod(captureResult);
-                                        _consecutiveNativeCaptureFailures = 0;
-                                    }
-                                }
-                                else
-                                {
-                                    _consecutiveNativeCaptureFailures = 0;
-                                }
 
                                 // Brief delay before retry
                                 await Task.Delay(500, _cancellationTokenSource.Token);
@@ -659,36 +607,6 @@ namespace HyperTizen
                 _isRunning = false;
                 Helper.Log.Write(Helper.eLogType.Info, "HyperionClient Start() method completed");
             }
-        }
-
-        private void QuarantineCaptureMethod(CaptureResult failure)
-        {
-            ICaptureMethod failedMethod = _selectedCaptureMethod;
-            if (failedMethod == null)
-            {
-                return;
-            }
-
-            Helper.Log.Write(Helper.eLogType.Error,
-                $"Disabling capture method after 3 consecutive native failures: " +
-                $"{failedMethod.Name}, code={failure.NativeErrorCode}");
-
-            if (_captureSelector != null)
-            {
-                _captureSelector.Disable(failedMethod);
-            }
-
-            try
-            {
-                failedMethod.Cleanup();
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Warning,
-                    $"Capture method cleanup after native failure failed: {ex.Message}");
-            }
-
-            _selectedCaptureMethod = null;
         }
 
         public async Task Stop()

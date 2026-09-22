@@ -18,7 +18,6 @@ namespace HyperTizen.WebSocket
         private HttpListener _httpListener;
         private List<System.Net.WebSockets.WebSocket> _connectedClients = new List<System.Net.WebSockets.WebSocket>();
         private readonly object _clientsLock = new object();
-        public static bool IsReady { get; private set; }
         private List<string> usnList = new List<string>()
         {
             "urn:hyperion-project.org:device:basic:1",
@@ -42,7 +41,6 @@ namespace HyperTizen.WebSocket
 
                 Helper.Log.Write(Helper.eLogType.Info,
                     "Control WebSocket server started successfully on port 45677");
-                IsReady = true;
 
                 while (true)
                 {
@@ -54,7 +52,8 @@ namespace HyperTizen.WebSocket
                     }
                     else
                     {
-                        await HandleHttpRequestAsync(httpContext);
+                        httpContext.Response.StatusCode = 400;
+                        httpContext.Response.Close();
                     }
                 }
             }
@@ -96,10 +95,6 @@ namespace HyperTizen.WebSocket
                     Tizen.Applications.Notifications.NotificationManager.Post(notif);
                 }
                 catch { /* Ignore notification errors */ }
-            }
-            finally
-            {
-                IsReady = false;
             }
         }
 
@@ -152,74 +147,6 @@ namespace HyperTizen.WebSocket
                     _connectedClients.Remove(webSocket);
                 }
             }
-        }
-
-        private async Task HandleHttpRequestAsync(HttpListenerContext context)
-        {
-            try
-            {
-                context.Response.Headers["Access-Control-Allow-Origin"] = "*";
-                context.Response.Headers["Cache-Control"] = "no-store";
-
-                if (string.Equals(context.Request.Url.AbsolutePath, "/health",
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    ServiceStatus status = App.client != null
-                        ? App.client.GetStatus()
-                        : new ServiceStatus
-                        {
-                            State = ServiceState.Starting,
-                            LastError = "Service initializing..."
-                        };
-
-                    var response = new
-                    {
-                        ready = IsReady && App.client != null && App.client.IsRunning,
-                        serviceState = status.State.ToString(),
-                        captureMethod = App.client?.SelectedCaptureMethodName,
-                        tizenVersion = GetTizenVersion(),
-                        lastError = status.LastError,
-                        controlPort = 45677,
-                        logPort = 45678
-                    };
-
-                    byte[] payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(response));
-                    context.Response.ContentType = "application/json; charset=utf-8";
-                    context.Response.StatusCode = 200;
-                    context.Response.ContentLength64 = payload.Length;
-                    await context.Response.OutputStream.WriteAsync(payload, 0, payload.Length);
-                }
-                else
-                {
-                    context.Response.StatusCode = 404;
-                }
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Warning,
-                    $"Health request failed: {ex.Message}");
-                context.Response.StatusCode = 500;
-            }
-            finally
-            {
-                context.Response.Close();
-            }
-        }
-
-        private static string GetTizenVersion()
-        {
-            try
-            {
-                string version;
-                if (Tizen.System.Information.TryGetValue(
-                    "http://tizen.org/feature/platform.version", out version))
-                {
-                    return version;
-                }
-            }
-            catch { }
-
-            return "unknown";
         }
 
         protected async Task OnMessageAsync(System.Net.WebSockets.WebSocket webSocket, string message)

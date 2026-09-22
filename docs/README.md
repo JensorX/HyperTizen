@@ -25,11 +25,25 @@ Die Web-App-Konfiguration liegt in [`../HyperTizenUI/config.xml`](../HyperTizenU
 
 ## Bauen und Signieren
 
-Das exakte Kommando hängt von der Tizen-Studio-Version und dem aktiven Profil ab. Allgemein:
+Die Tizen-Core-CLI erzeugt zunächst das Web-WGT. Der .NET-Build erzeugt separat das Service-TPK. Beide Pakete werden anschließend mit `tz sign-pack hybrid` zu einem signierten WGT verbunden:
 
 ```bash
-dotnet build HyperTizen/HyperTizen.csproj -c Release
-# Hybrid-Workspace mit dem aktiven Profil als .wgt paketieren und signieren
+tz build --proj-dir "$PWD/../HyperTizenUI" --build-type Release --sign-profile hypertizen-ci
+tz pack --proj-dir "$PWD/../HyperTizenUI" --type wgt \
+	--out-path "$PWD/../HyperTizenUI.wgt" \
+	--profiles-path "$PWD/../profiles.xml" \
+	--sign-profile hypertizen-ci
+dotnet build ../HyperTizen/HyperTizen.csproj -c Release \
+	-p:TizenCreateTpkOnBuild=true
+SERVICE_TPK=$(find "$PWD/../HyperTizen/bin/Release" -type f -name '*.tpk' -print -quit)
+
+tz sign-pack hybrid \
+	--web-pkg "$PWD/../HyperTizenUI.wgt" \
+	--dotnet-pkg "$SERVICE_TPK" \
+	--final-pkg "$PWD/../HyperTizen.wgt" \
+	--profiles-path "$PWD/../profiles.xml" \
+	--sign-profile hypertizen-ci \
+	--deps-type hybrid
 ```
 
 Die Ausgabe muss ein gemeinsames `.wgt` sein, nicht ein separates `.tpk` plus eine TizenBrew-App. Installation:
@@ -44,7 +58,7 @@ Danach die Kachel **HyperTizen** starten.
 
 Der Workflow [`../.github/workflows/build-hypertizen-wgt.yml`](../.github/workflows/build-hypertizen-wgt.yml) erstellt das signierte Standalone-WGT bei Pushes auf `main`, `v*.*.*`-Tags oder über `workflow_dispatch`. Er verwendet die GitHub-Umgebungsvariablen `GITHUB_WORKSPACE`, `GITHUB_SHA`, `GITHUB_REF_NAME` und `RUNNER_TEMP` sowie die Repository-Secrets `TIZEN_AUTHOR_KEY` und `TIZEN_AUTHOR_KEY_PW`.
 
-`TIZEN_AUTHOR_KEY` muss die Base64-kodierte Tizen-Author-`.p12` enthalten. Der Workflow kompiliert den Service mit dem Tizen-.NET-SDK, setzt die Hybrid-Struktur (`bin`, `info/manifest.xml`, `res/wgt`, `shared`) zusammen und signiert ein einziges `HyperTizen-<version>-<sha>.wgt` mit `tizen.js`. Das Ergebnis steht als Actions-Artefakt bereit; ein `v*.*.*`-Tag erzeugt zusätzlich ein GitHub Release.
+`TIZEN_AUTHOR_KEY` muss die Base64-kodierte Tizen-Author-`.p12` enthalten. Der Runner installiert die Tizen-10-Core-CLI und die Tizen-.NET-Workload, erzeugt aus beiden Secrets ein temporäres `profiles.xml`, baut das Web-WGT und das .NET-TPK getrennt und signiert anschließend mit `tz sign-pack hybrid`. Das Ergebnis steht als Actions-Artefakt bereit; ein `v*.*.*`-Tag erzeugt zusätzlich ein GitHub Release.
 
 ## Diagnose nach der Installation
 

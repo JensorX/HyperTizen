@@ -70,21 +70,36 @@ Zu validieren auf echter Hardware:
 
 ## Build und Signierung
 
-Für einen lokalen Build werden Tizen Studio, das Tizen-.NET-9-SDK und ein aktives Signing-Profil benötigt. Typischer Ablauf:
+Für einen lokalen Build werden die Tizen-Core-CLI, das Tizen-.NET-9-SDK und ein aktives Signing-Profil benötigt. Die Web-App und der .NET-Service werden als getrennte Pakete erzeugt und danach mit dem offiziellen Hybrid-Packer verbunden:
 
 ```bash
-tizen build-web -- /path/to/HyperTizenUI
-dotnet build HyperTizen/HyperTizen.csproj -c Release
-# anschließend das Hybrid-Workspace-WGT mit dem aktiven Tizen-Profil paketieren
+tz build --proj-dir "$PWD/HyperTizenUI" --build-type Release --sign-profile hypertizen-ci
+tz pack --proj-dir "$PWD/HyperTizenUI" --type wgt \
+   --out-path "$PWD/HyperTizenUI.wgt" \
+   --profiles-path "$PWD/profiles.xml" \
+   --sign-profile hypertizen-ci
+dotnet build HyperTizen/HyperTizen.csproj -c Release \
+   -p:TizenCreateTpkOnBuild=true
+SERVICE_TPK=$(find "$PWD/HyperTizen/bin/Release" -type f -name '*.tpk' -print -quit)
+
+tz sign-pack hybrid \
+   --web-pkg "$PWD/HyperTizenUI.wgt" \
+   --dotnet-pkg "$SERVICE_TPK" \
+   --final-pkg "$PWD/HyperTizen-2.0.0.wgt" \
+   --profiles-path "$PWD/profiles.xml" \
+   --sign-profile hypertizen-ci \
+   --deps-type hybrid
 ```
 
-Die exakten Build-Schritte hängen von der installierten Tizen-Studio-Version und dem Signing-Profil ab. In dieser Entwicklungsumgebung sind `tizen`, `dotnet` und ein echter TV nicht verfügbar; deshalb kann hier kein signiertes WGT und keine Hardwarefreigabe erzeugt werden.
+Das Profil kann mit `tz security-profiles add` aus einer Author-`.p12` erzeugt werden. Im CI wird `profiles.xml` temporär aus `TIZEN_AUTHOR_KEY` (Base64-kodierte `.p12`) und `TIZEN_AUTHOR_KEY_PW` erstellt. Die Zwischendateien WGT und TPK werden nicht veröffentlicht; das Ergebnis ist ein gemeinsames signiertes WGT.
+
+In dieser Entwicklungsumgebung sind `tizen`, `dotnet` und ein echter TV nicht verfügbar; deshalb kann hier kein signiertes WGT und keine Hardwarefreigabe erzeugt werden.
 
 ### GitHub Actions
 
-Der Workflow [`build-hypertizen-wgt.yml`](.github/workflows/build-hypertizen-wgt.yml) baut bei `main`, bei `v*.*.*`-Tags oder manuell ein gemeinsames Hybrid-WGT. Er kompiliert den .NET-Service, legt den nativen Teil unter `bin`/`info` und die UI unter `res/wgt` ab und signiert anschließend das Ergebnis mit `tizen.js`.
+Der Workflow [`build-hypertizen-wgt.yml`](.github/workflows/build-hypertizen-wgt.yml) baut bei `main`, bei `v*.*.*`-Tags oder manuell ein gemeinsames Hybrid-WGT. Er installiert die Tizen-Core-CLI, kompiliert Web-App und .NET-Service getrennt und signiert anschließend das Ergebnis mit `tz sign-pack hybrid`.
 
-Dafür müssen im Repository die Actions-Secrets `TIZEN_AUTHOR_KEY` (Base64-kodierte `.p12`-Datei) und `TIZEN_AUTHOR_KEY_PW` (Passwort) hinterlegt sein. Das WGT wird als Actions-Artefakt veröffentlicht; bei einem Versionstag wird zusätzlich ein GitHub Release angelegt. Distributor-Zertifikate werden wie im TizenTube-Workflow über `--privilege public` von `tizen.js` bezogen.
+Dafür müssen im Repository die Actions-Secrets `TIZEN_AUTHOR_KEY` (Base64-kodierte `.p12`-Datei) und `TIZEN_AUTHOR_KEY_PW` (Passwort) hinterlegt sein. Der Runner installiert die Tizen-10-Core-CLI und die Tizen-.NET-Workload, erzeugt ein temporäres `profiles.xml`, baut ein Web-WGT und ein .NET-TPK und verbindet beide mit `tz sign-pack hybrid`. Das signierte WGT wird als Actions-Artefakt veröffentlicht; bei einem Versionstag wird zusätzlich ein GitHub Release angelegt.
 
 ## Debugging
 

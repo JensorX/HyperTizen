@@ -1,4 +1,4 @@
-name: Build HyperTizen standalone WGT
+name: Build HyperTizen TPK
 
 on:
   push:
@@ -13,12 +13,14 @@ permissions:
 
 env:
   DOTNET_VERSION: '6.0.x'
-  TIZENJS_PACKAGE: 'https://github.com/reisxd/tizen.js/tarball/main'
+  TIZEN_PLATFORM_PACKAGE: 'TIZEN-10.0-NativeAppDevelopment-CLI'
+  TIZEN_STUDIO_URL: 'https://download.tizen.org/sdk/Installer/tizen-sdk_10.0/web-cli_Tizen_SDK_10.0_ubuntu-64.bin'
+  TIZEN_SIGN_PROFILE: 'hypertizen-ci'
   PACKAGE_ID: io.gh.reisxd.HyperTizen
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
@@ -32,11 +34,6 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
       - name: Install Tizen .NET workload
         shell: bash
         run: |
@@ -47,12 +44,44 @@ jobs:
             | sudo env "PATH=$PATH" "DOTNET_ROOT=${DOTNET_ROOT:-}" bash
           dotnet workload list
 
+      - name: Install Tizen Studio CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          TIZEN_STUDIO_HOME="$RUNNER_TEMP/tizen-studio"
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            openjdk-11-jre-headless \
+            software-properties-common \
+            unzip \
+            zip
+          sudo add-apt-repository -y ppa:deadsnakes/ppa
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3.8 libpython3.8
+
+          installer="$RUNNER_TEMP/tizen-sdk-cli.bin"
+          curl --fail --location --retry 3 --silent --show-error \
+            "$TIZEN_STUDIO_URL" \
+            --output "$installer"
+          chmod +x "$installer"
+          "$installer" --accept-license "$TIZEN_STUDIO_HOME"
+          "$TIZEN_STUDIO_HOME/package-manager/package-manager-cli.bin" install \
+            --accept-license "$TIZEN_PLATFORM_PACKAGE"
+
+          export PATH="$TIZEN_STUDIO_HOME/tools/tizen-core:$TIZEN_STUDIO_HOME/tools/ide/bin:$PATH"
+          echo "$TIZEN_STUDIO_HOME/tools/tizen-core" >> "$GITHUB_PATH"
+          echo "$TIZEN_STUDIO_HOME/tools/ide/bin" >> "$GITHUB_PATH"
+          tz --version
+
       - name: Determine package version
         shell: bash
         run: |
           set -euo pipefail
 
-          manifest_version=$(sed -n 's/.*<manifest[^>]*version="\([^"]*\)".*/\1/p' HyperTizen/tizen-manifest.xml | head -n1)
+          manifest_version=$(sed -n 's/.*<manifest[^>]*[[:space:]]version="\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' HyperTizen/tizen-manifest.xml | head -n1)
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             build_version="${GITHUB_REF_NAME#v}"
           else
@@ -67,119 +96,94 @@ jobs:
           echo "BUILD_VERSION=$build_version" >> "$GITHUB_ENV"
           echo "RELEASE_SHA=${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "RELEASE_SHA_SHORT=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
-          echo "WGT_NAME=HyperTizen-${build_version}-${GITHUB_SHA:0:7}.wgt" >> "$GITHUB_ENV"
-          echo "HYPERTIZEN_STAGE=${RUNNER_TEMP}/hypertizen-standalone" >> "$GITHUB_ENV"
+          echo "TPK_NAME=HyperTizen-${build_version}-${GITHUB_SHA:0:7}.tpk" >> "$GITHUB_ENV"
           echo "HYPERTIZEN_RELEASE=${RUNNER_TEMP}/hypertizen-release" >> "$GITHUB_ENV"
+          echo "TIZEN_STUDIO_HOME=${RUNNER_TEMP}/tizen-studio" >> "$GITHUB_ENV"
           echo "TIZEN_AUTHOR_CERT=${RUNNER_TEMP}/hypertizen-author.p12" >> "$GITHUB_ENV"
+          echo "TIZEN_PROFILES_XML=${RUNNER_TEMP}/hypertizen-profiles.xml" >> "$GITHUB_ENV"
 
       - name: Validate sources
         run: |
           set -euo pipefail
           git diff --check
-          test -f HyperTizenUI/config.xml
           test -f HyperTizen/tizen-manifest.xml
           test -f HyperTizen/HyperTizen.csproj
           grep -q "package=\"${PACKAGE_ID}\"" HyperTizen/tizen-manifest.xml
           grep -q '<TargetFramework>tizen90</TargetFramework>' HyperTizen/HyperTizen.csproj
 
-      - name: Build native service assemblies
+      - name: Apply package version
         shell: bash
         run: |
           set -euo pipefail
+
+          sed -E -i \
+            "s/(version=\")([0-9]+\.[0-9]+\.[0-9]+)/\1${BUILD_VERSION}/" \
+            HyperTizen/tizen-manifest.xml
+
+      - name: Prepare Tizen signing profile
+        shell: bash
+        env:
+          TIZEN_AUTHOR_KEY: ${{ secrets.TIZEN_KEY || secrets.TIZEN_AUTHOR_KEY }}
+          TIZEN_AUTHOR_KEY_PW: ${{ secrets.TIZEN_PW || secrets.TIZEN_AUTHOR_KEY_PW }}
+        run: |
+          set -euo pipefail
+          : "${TIZEN_AUTHOR_KEY:?Missing repository secret TIZEN_KEY or TIZEN_AUTHOR_KEY}"
+          : "${TIZEN_AUTHOR_KEY_PW:?Missing repository secret TIZEN_PW or TIZEN_AUTHOR_KEY_PW}"
+
+          rm -f "$TIZEN_AUTHOR_CERT" "$TIZEN_PROFILES_XML"
+          printf '%s' "$TIZEN_AUTHOR_KEY" | base64 --decode > "$TIZEN_AUTHOR_CERT"
+          chmod 600 "$TIZEN_AUTHOR_CERT"
+
+          tz security-profiles add \
+            --name "$TIZEN_SIGN_PROFILE" \
+            --active \
+            --xml-path "$TIZEN_PROFILES_XML" \
+            --author "$TIZEN_AUTHOR_CERT" \
+            --password "$TIZEN_AUTHOR_KEY_PW"
+
+          mkdir -p "$HOME/tizen-studio-data/profile"
+          cp "$TIZEN_PROFILES_XML" "$HOME/tizen-studio-data/profile/profiles.xml"
+          tizen cli-config --global "default.profiles.path=$TIZEN_PROFILES_XML"
+          test -s "$TIZEN_PROFILES_XML"
+          grep -q "$TIZEN_SIGN_PROFILE" "$TIZEN_PROFILES_XML"
+
+      - name: Build and sign native service TPK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$HYPERTIZEN_RELEASE" "$GITHUB_WORKSPACE/HyperTizen/bin/Release"
+          mkdir -p "$HYPERTIZEN_RELEASE"
 
           dotnet build HyperTizen/HyperTizen.csproj \
             --configuration Release \
             --nologo \
-            -p:TizenCreateTpkOnBuild=false
+            -p:TizenCreateTpkOnBuild=true
 
-      - name: Prepare standalone package root
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf "$HYPERTIZEN_STAGE" "$HYPERTIZEN_RELEASE"
-          mkdir -p \
-            "$HYPERTIZEN_STAGE/bin" \
-            "$HYPERTIZEN_STAGE/info" \
-            "$HYPERTIZEN_STAGE/lib" \
-            "$HYPERTIZEN_STAGE/res/wgt" \
-            "$HYPERTIZEN_STAGE/shared" \
-            "$HYPERTIZEN_RELEASE"
-
-          native_output=$(find HyperTizen/bin/Release -type f -name 'HyperTizen.dll' -printf '%h\n' | head -n1)
-          if [[ -z "$native_output" ]]; then
-            echo 'The Tizen .NET build did not produce HyperTizen.dll' >&2
+          mapfile -t service_packages < <(find "$GITHUB_WORKSPACE/HyperTizen/bin/Release" -type f -name '*.tpk' -print)
+          if [[ "${#service_packages[@]}" -ne 1 ]]; then
+            printf 'Expected exactly one service TPK, found %s\n' "${#service_packages[@]}" >&2
+            printf '%s\n' "${service_packages[@]}" >&2
             exit 1
           fi
 
-          cp -a "$native_output/." "$HYPERTIZEN_STAGE/bin/"
-          cp -a HyperTizen/shared/. "$HYPERTIZEN_STAGE/shared/"
-          cp HyperTizen/tizen-manifest.xml "$HYPERTIZEN_STAGE/info/manifest.xml"
-          cp -a HyperTizenUI/. "$HYPERTIZEN_STAGE/res/wgt/"
+          tpk_package="$HYPERTIZEN_RELEASE/$TPK_NAME"
+          cp "${service_packages[0]}" "$tpk_package"
+          tizen package \
+            -t tpk \
+            -s "$TIZEN_SIGN_PROFILE" \
+            -- "$tpk_package"
 
-          if [[ -d HyperTizen/lib ]]; then
-            cp -a HyperTizen/lib/. "$HYPERTIZEN_STAGE/lib/"
-          fi
-          if [[ -d HyperTizen/res ]]; then
-            cp -a HyperTizen/res/. "$HYPERTIZEN_STAGE/res/"
-          fi
+          echo "TPK_PACKAGE=$tpk_package" >> "$GITHUB_ENV"
+          test -s "$tpk_package"
+          unzip -l "$tpk_package" | grep -q 'tizen-manifest.xml'
+          unzip -l "$tpk_package" | grep -Eq 'author-signature.xml|signature1.xml'
 
-          for manifest in \
-            "$HYPERTIZEN_STAGE/info/manifest.xml" \
-            "$HYPERTIZEN_STAGE/res/wgt/config.xml"; do
-            sed -E -i \
-              "s/(version=\")([0-9]+\.[0-9]+\.[0-9]+)/\1${BUILD_VERSION}/" \
-              "$manifest"
-          done
-
-          test -f "$HYPERTIZEN_STAGE/bin/HyperTizen.dll"
-          test -f "$HYPERTIZEN_STAGE/info/manifest.xml"
-          test -f "$HYPERTIZEN_STAGE/res/wgt/config.xml"
-          test -f "$HYPERTIZEN_STAGE/res/wgt/index.html"
-
-      - name: Prepare Tizen author certificate
-        shell: bash
-        env:
-          TIZEN_AUTHOR_KEY: ${{ secrets.TIZEN_KEY || secrets.TIZEN_AUTHOR_KEY }}
-        run: |
-          set -euo pipefail
-          : "${TIZEN_AUTHOR_KEY:?Missing repository secret TIZEN_KEY or TIZEN_AUTHOR_KEY}"
-
-          printf '%s' "$TIZEN_AUTHOR_KEY" | base64 --decode > "$TIZEN_AUTHOR_CERT"
-          chmod 600 "$TIZEN_AUTHOR_CERT"
-
-      - name: Install tizen.js packaging CLI
-        run: npm install --global "$TIZENJS_PACKAGE"
-
-      - name: Build signed standalone WGT
-        shell: bash
-        env:
-          TIZEN_AUTHOR_KEY_PW: ${{ secrets.TIZEN_PW || secrets.TIZEN_AUTHOR_KEY_PW }}
-        run: |
-          set -euo pipefail
-          : "${TIZEN_AUTHOR_KEY_PW:?Missing repository secret TIZEN_PW or TIZEN_AUTHOR_KEY_PW}"
-
-          (
-            cd "$HYPERTIZEN_STAGE"
-            tizenjs build . \
-              --type wgt \
-              --output "$HYPERTIZEN_RELEASE/$WGT_NAME" \
-              --author "$TIZEN_AUTHOR_CERT" \
-              --authorPwd "$TIZEN_AUTHOR_KEY_PW" \
-              -p public \
-              --ignore node_modules,/.*\\.wgt$/,/release/,/.git/
-          )
-
-          echo "WGT_PACKAGE=$HYPERTIZEN_RELEASE/$WGT_NAME" >> "$GITHUB_ENV"
-          unzip -l "$WGT_PACKAGE" | grep -q 'info/manifest.xml'
-          unzip -l "$WGT_PACKAGE" | grep -q 'res/wgt/config.xml'
-          unzip -l "$WGT_PACKAGE" | grep -q 'bin/HyperTizen.dll'
-
-      - name: Upload signed standalone WGT artifact
+      - name: Upload signed TPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.WGT_NAME }}
-          path: ${{ env.WGT_PACKAGE }}
+          name: ${{ env.TPK_NAME }}
+          path: ${{ env.TPK_PACKAGE }}
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -188,8 +192,8 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           target_commitish: ${{ env.RELEASE_SHA }}
-          files: ${{ env.WGT_PACKAGE }}
+          files: ${{ env.TPK_PACKAGE }}
 
       - name: Remove signing material
         if: always()
-        run: rm -f "$TIZEN_AUTHOR_CERT"
+        run: rm -f "$TIZEN_AUTHOR_CERT" "$TIZEN_PROFILES_XML" "$HOME/tizen-studio-data/profile/profiles.xml"

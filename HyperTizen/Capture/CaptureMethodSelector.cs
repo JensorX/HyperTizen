@@ -26,7 +26,7 @@ namespace HyperTizen.Capture
         {
             Helper.Log.Write(Helper.eLogType.Info, "CaptureMethodSelector: Initializing all capture methods");
             Helper.Log.Write(Helper.eLogType.Warning,
-                "CaptureMethodSelector: T9 native methods are disabled until their ABI and YUV layout are validated");
+                "CaptureMethodSelector: T9 native methods remain disabled until their ABI and YUV range are validated");
 
             _methods = new List<ICaptureMethod>
             {

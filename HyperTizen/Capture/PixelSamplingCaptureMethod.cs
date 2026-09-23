@@ -29,6 +29,9 @@ namespace HyperTizen.Capture
         }
         private PixelCoordinate[] _pixelCoordinates = null;
 
+        private const double OutputBrightnessGain = 1.25;
+        private const double OutputSaturationGain = 1.20;
+
         // 16-point sampling grid (normalized coordinates 0.0-1.0)
         // 4 points per edge for better color representation
         // With synchronized batching, we achieve 40 FPS even with 16 points
@@ -210,7 +213,7 @@ namespace HyperTizen.Capture
 
         /// <summary>
         /// RGB values returned by VideoEnhance. The native ABI uses 32-bit fields;
-        /// the original HyperTizen consumer treats the component values as 8-bit.
+        /// the component values are 8-bit RGB values.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         public struct Color
@@ -568,8 +571,8 @@ namespace HyperTizen.Capture
         private Color[] GetColors()
         {
             Color[] colorData = new Color[_capturedPoints.Length];
-            int maxBatchSize = _condition.ScreenCapturePoints;
 
+            int maxBatchSize = _condition.ScreenCapturePoints;
             if (maxBatchSize <= 0)
             {
                 Helper.Log.Write(Helper.eLogType.Error, "PixelSampling: ScreenCapturePoints is 0");
@@ -583,14 +586,16 @@ namespace HyperTizen.Capture
                 for (int slot = 0; slot < batchSize; slot++)
                 {
                     int pointIndex = batchStart + slot;
-                    int x = _pixelCoordinates[pointIndex].X;
-                    int y = _pixelCoordinates[pointIndex].Y;
-                    int result = CallMeasurePosition(slot, x, y);
+                    int coordinateX = _pixelCoordinates[pointIndex].X;
+                    int coordinateY = _pixelCoordinates[pointIndex].Y;
+
+                    int result = CallMeasurePosition(slot, coordinateX, coordinateY);
 
                     if (result < 0)
                     {
                         Helper.Log.Write(Helper.eLogType.Error,
-                            $"PixelSampling: MeasurePosition failed for point {pointIndex} at ({x}, {y}) with error {result}");
+                            $"PixelSampling: MeasurePosition failed for point {pointIndex} at " +
+                            $"({coordinateX}, {coordinateY}) with error {result}");
                     }
                 }
 
@@ -615,13 +620,15 @@ namespace HyperTizen.Capture
                     }
                     else
                     {
+                        // Validate color data (10-bit values should be 0-1023)
                         bool invalidColorData = color.R > 1023 || color.G > 1023 || color.B > 1023 ||
                                                 color.R < 0 || color.G < 0 || color.B < 0;
 
                         if (invalidColorData)
                         {
                             Helper.Log.Write(Helper.eLogType.Warning,
-                                $"PixelSampling: Invalid color data at point {pointIndex}: R={color.R}, G={color.G}, B={color.B}");
+                                $"PixelSampling: Invalid color data at point {pointIndex}: " +
+                                $"R={color.R}, G={color.G}, B={color.B}");
                             color.R = Math.Max(0, Math.Min(1023, color.R));
                             color.G = Math.Max(0, Math.Min(1023, color.G));
                             color.B = Math.Max(0, Math.Min(1023, color.B));
@@ -633,6 +640,29 @@ namespace HyperTizen.Capture
             }
 
             return colorData;
+        }
+
+        private void BoostColors(Color[] colors)
+        {
+            for (int colorIndex = 0; colorIndex < colors.Length; colorIndex++)
+            {
+                int red = ScaleTo8Bit(colors[colorIndex].R);
+                int green = ScaleTo8Bit(colors[colorIndex].G);
+                int blue = ScaleTo8Bit(colors[colorIndex].B);
+                double luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
+
+                colors[colorIndex].R = ClampRgb(
+                    (luminance + (red - luminance) * OutputSaturationGain) * OutputBrightnessGain);
+                colors[colorIndex].G = ClampRgb(
+                    (luminance + (green - luminance) * OutputSaturationGain) * OutputBrightnessGain);
+                colors[colorIndex].B = ClampRgb(
+                    (luminance + (blue - luminance) * OutputSaturationGain) * OutputBrightnessGain);
+            }
+        }
+
+        private static int ClampRgb(double value)
+        {
+            return (int)Math.Max(0, Math.Min(255, Math.Round(value)));
         }
 
         /// <summary>
@@ -648,7 +678,8 @@ namespace HyperTizen.Capture
             byte[] yData = new byte[width * height];
             byte[] uvData = new byte[width * height / 2]; // UV plane is half the size
 
-            // Create a representative image so unmeasured pixels do not become black.
+            // Fill unmeasured pixels with the average sampled color so the frame
+            // does not become black outside the narrow edge bands.
             byte[] rgbImage = new byte[width * height * 3]; // RGB888
 
             int averageRed = 0;
@@ -882,8 +913,7 @@ namespace HyperTizen.Capture
 
         /// <summary>
         /// Normalize a VideoEnhance color component for RGB888 conversion.
-        /// Values are already 8-bit in the original API contract; larger values
-        /// are clipped defensively instead of being divided by 1023.
+        /// VideoEnhance returns 8-bit component values.
         /// </summary>
         private byte ScaleTo8Bit(int value)
         {
@@ -918,6 +948,8 @@ namespace HyperTizen.Capture
                 {
                     return CaptureResult.CreateFailure("PixelSampling: No colors captured");
                 }
+
+                BoostColors(colors);
 
                 // Convert to NV12 format
                 var (yData, uvData) = ConvertColorsToNV12(colors);

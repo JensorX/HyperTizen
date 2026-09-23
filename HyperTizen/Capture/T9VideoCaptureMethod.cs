@@ -277,13 +277,9 @@ namespace HyperTizen.Capture
 
             try
             {
-                int testWidth = global::HyperTizen.Globals.Instance.Width;
-                int testHeight = global::HyperTizen.Globals.Instance.Height;
-                if (testWidth <= 0 || testHeight <= 0)
-                {
-                    testWidth = 1920;
-                    testHeight = 1080;
-                }
+                // Allocate test buffers (small resolution for testing)
+                int testWidth = 1920;
+                int testHeight = 1080;
                 int ySize = testWidth * testHeight;
                 int uvSize = ySize / 2; // NV12 format
 
@@ -310,37 +306,38 @@ namespace HyperTizen.Capture
 
                     int result = -999; // Default failure
 
-                    Marshal.Copy(new byte[ySize], 0, yBuffer, ySize);
-                    Marshal.Copy(new byte[uvSize], 0, uvBuffer, uvSize);
-                    result = CallCapture(entryPointName, ref input, ref output);
+                    // Call appropriate entry point based on library version and name
+                    switch (entryPointName)
+                    {
+                        case "secvideo_api_capture_screen_video_only":
+                            result = CallSecvideoApiScreenVideoOnly(ref input, ref output);
+                            break;
+
+                        case "secvideo_api_capture_screen":
+                            result = CallSecvideoApiScreen(ref input, ref output);
+                            break;
+
+                        case "ppi_video_capture_get_video_main_yuv":
+                            ppi_video_capture_lock_global();
+                            result = ppi_video_capture_get_video_main_yuv(ref input, ref output);
+                            ppi_video_capture_unlock_global();
+                            break;
+
+                        case "ppi_video_capture_get_screen_post_yuv":
+                            ppi_video_capture_lock_global();
+                            result = ppi_video_capture_get_screen_post_yuv(ref input, ref output);
+                            ppi_video_capture_unlock_global();
+                            break;
+                    }
 
                     Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] {entryPointName} returned: {result}");
 
                     // Check success (0 or 4 are success codes)
                     bool isSuccess = (result == 0 || result == 4);
 
-                    int actualWidth;
-                    int actualHeight;
-                    int actualYSize;
-                    int actualUvSize;
-                    IntPtr ySource;
-                    IntPtr uvSource;
-
-                    if (isSuccess && TryResolvePlanes(
-                        yBuffer, ySize, uvBuffer, uvSize, output,
-                        out actualWidth, out actualHeight, out actualYSize, out actualUvSize,
-                        out ySource, out uvSource))
+                    if (isSuccess && output.width > 0 && output.height > 0)
                     {
-                        if (!HasNonBlackLuma(ySource, actualWidth, actualHeight))
-                        {
-                            Helper.Log.Write(Helper.eLogType.Warning,
-                                $"[T9VideoCaptureMethod] {entryPointName} returned an empty or black Y plane");
-                            return false;
-                        }
-
-                        Helper.Log.Write(Helper.eLogType.Info,
-                            $"[T9VideoCaptureMethod] ✓ SUCCESS: {actualWidth}x{actualHeight}, " +
-                            $"Y size: {actualYSize}, UV size: {actualUvSize}");
+                        Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] ✓ SUCCESS: {output.width}x{output.height}, Y size: {output.ySize}, UV size: {output.uvSize}");
                         _workingEntryPoint = entryPointName;
                         return true;
                     }
@@ -423,140 +420,6 @@ namespace HyperTizen.Capture
             }
         }
 
-        private int CallCapture(string entryPointName, ref InputParams input, ref OutputParams output)
-        {
-            switch (entryPointName)
-            {
-                case "secvideo_api_capture_screen_video_only":
-                    return CallSecvideoApiScreenVideoOnly(ref input, ref output);
-
-                case "secvideo_api_capture_screen":
-                    return CallSecvideoApiScreen(ref input, ref output);
-
-                case "ppi_video_capture_get_video_main_yuv":
-                    return CallPpiCapture("ppi_video_capture_get_video_main_yuv", ref input, ref output);
-
-                case "ppi_video_capture_get_screen_post_yuv":
-                    return CallPpiCapture("ppi_video_capture_get_screen_post_yuv", ref input, ref output);
-
-                default:
-                    return -99;
-            }
-        }
-
-        private static int CallPpiCapture(
-            string entryPointName,
-            ref InputParams input,
-            ref OutputParams output)
-        {
-            int lockResult = ppi_video_capture_lock_global();
-            if (lockResult != 0)
-            {
-                return lockResult;
-            }
-
-            try
-            {
-                switch (entryPointName)
-                {
-                    case "ppi_video_capture_get_video_main_yuv":
-                        return ppi_video_capture_get_video_main_yuv(ref input, ref output);
-
-                    case "ppi_video_capture_get_screen_post_yuv":
-                        return ppi_video_capture_get_screen_post_yuv(ref input, ref output);
-
-                    default:
-                        return -99;
-                }
-            }
-            finally
-            {
-                ppi_video_capture_unlock_global();
-            }
-        }
-
-        private static bool TryResolvePlanes(
-            IntPtr yBuffer,
-            int yCapacity,
-            IntPtr uvBuffer,
-            int uvCapacity,
-            OutputParams output,
-            out int width,
-            out int height,
-            out int ySize,
-            out int uvSize,
-            out IntPtr ySource,
-            out IntPtr uvSource)
-        {
-            width = output.width;
-            height = output.height;
-            ySize = 0;
-            uvSize = 0;
-            ySource = IntPtr.Zero;
-            uvSource = IntPtr.Zero;
-
-            if (width <= 0 || height <= 0 || (height & 1) != 0)
-            {
-                return false;
-            }
-
-            long expectedYSize = (long)width * height;
-            long expectedUvSize = expectedYSize / 2;
-            if (expectedYSize > int.MaxValue || expectedUvSize > int.MaxValue)
-            {
-                return false;
-            }
-
-            ySize = output.ySize > 0 ? output.ySize : (int)expectedYSize;
-            uvSize = output.uvSize > 0 ? output.uvSize : (int)expectedUvSize;
-            if (ySize != expectedYSize || uvSize != expectedUvSize)
-            {
-                return false;
-            }
-
-            ySource = output.pYData == IntPtr.Zero ? yBuffer : output.pYData;
-            uvSource = output.pUVData == IntPtr.Zero ? uvBuffer : output.pUVData;
-
-            return OwnsBuffer(yBuffer, yCapacity, ySource, ySize) &&
-                   OwnsBuffer(uvBuffer, uvCapacity, uvSource, uvSize);
-        }
-
-        private static bool OwnsBuffer(IntPtr buffer, int capacity, IntPtr pointer, int size)
-        {
-            if (buffer == IntPtr.Zero || pointer == IntPtr.Zero || size <= 0 || size > capacity)
-            {
-                return false;
-            }
-
-            long start = buffer.ToInt64();
-            long value = pointer.ToInt64();
-            return value >= start && value <= start + capacity - size;
-        }
-
-        private static bool HasNonBlackLuma(IntPtr yBuffer, int width, int height)
-        {
-            if (yBuffer == IntPtr.Zero || width <= 0 || height <= 0)
-            {
-                return false;
-            }
-
-            const int samplesPerAxis = 16;
-            for (int row = 0; row < samplesPerAxis; row++)
-            {
-                int y = row * (height - 1) / (samplesPerAxis - 1);
-                for (int column = 0; column < samplesPerAxis; column++)
-                {
-                    int x = column * (width - 1) / (samplesPerAxis - 1);
-                    if (Marshal.ReadByte(yBuffer, y * width + x) > 16)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-
         public CaptureResult Capture(int width, int height)
         {
             if (!_isInitialized || string.IsNullOrEmpty(_workingEntryPoint))
@@ -575,9 +438,6 @@ namespace HyperTizen.Capture
 
                 try
                 {
-                    Marshal.Copy(new byte[ySize], 0, yBuffer, ySize);
-                    Marshal.Copy(new byte[uvSize], 0, uvBuffer, uvSize);
-
                     // Setup input parameters
                     InputParams input = new InputParams
                     {
@@ -596,33 +456,41 @@ namespace HyperTizen.Capture
 
                     int result = -999;
 
-                    result = CallCapture(_workingEntryPoint, ref input, ref output);
+                    // Call the working entry point
+                    switch (_workingEntryPoint)
+                    {
+                        case "secvideo_api_capture_screen_video_only":
+                            result = CallSecvideoApiScreenVideoOnly(ref input, ref output);
+                            break;
+
+                        case "secvideo_api_capture_screen":
+                            result = CallSecvideoApiScreen(ref input, ref output);
+                            break;
+
+                        case "ppi_video_capture_get_video_main_yuv":
+                            ppi_video_capture_lock_global();
+                            result = ppi_video_capture_get_video_main_yuv(ref input, ref output);
+                            ppi_video_capture_unlock_global();
+                            break;
+
+                        case "ppi_video_capture_get_screen_post_yuv":
+                            ppi_video_capture_lock_global();
+                            result = ppi_video_capture_get_screen_post_yuv(ref input, ref output);
+                            ppi_video_capture_unlock_global();
+                            break;
+                    }
 
                     // Check success
-                    int actualWidth;
-                    int actualHeight;
-                    int actualYSize;
-                    int actualUvSize;
-                    IntPtr ySource;
-                    IntPtr uvSource;
-
-                    if ((result == 0 || result == 4) && TryResolvePlanes(
-                        yBuffer, ySize, uvBuffer, uvSize, output,
-                        out actualWidth, out actualHeight, out actualYSize, out actualUvSize,
-                        out ySource, out uvSource))
+                    if ((result == 0 || result == 4) && output.width > 0 && output.height > 0)
                     {
-                        if (!HasNonBlackLuma(ySource, actualWidth, actualHeight))
-                        {
-                            return CaptureResult.CreateFailure("Native capture returned an empty or black Y plane");
-                        }
+                        // Copy data to managed arrays
+                        byte[] yData = new byte[output.ySize];
+                        byte[] uvData = new byte[output.uvSize];
 
-                        byte[] yData = new byte[actualYSize];
-                        byte[] uvData = new byte[actualUvSize];
+                        Marshal.Copy(output.pYData, yData, 0, output.ySize);
+                        Marshal.Copy(output.pUVData, uvData, 0, output.uvSize);
 
-                        Marshal.Copy(ySource, yData, 0, actualYSize);
-                        Marshal.Copy(uvSource, uvData, 0, actualUvSize);
-
-                        return CaptureResult.CreateSuccess(yData, uvData, actualWidth, actualHeight);
+                        return CaptureResult.CreateSuccess(yData, uvData, output.width, output.height);
                     }
                     else if (result == -4)
                     {

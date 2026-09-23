@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Google.FlatBuffers;
 using hyperhdrnet;
@@ -15,7 +14,6 @@ namespace HyperTizen
     public static class Networking
     {
         private static readonly object _lock = new object();
-        private static readonly SemaphoreSlim _imageExchangeLock = new SemaphoreSlim(1, 1);
         private static TcpClient _client;
         private static NetworkStream _stream;
 
@@ -218,44 +216,9 @@ namespace HyperTizen
                 return;
             }
 
-            await _imageExchangeLock.WaitAsync();
-            try
-            {
-                NetworkStream localStream;
-                lock (_lock)
-                {
-                    if (_client == null || !_client.Connected || _stream == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning,
-                            "SendImageAsync: Connection lost before send");
-                        return;
-                    }
-
-                    localStream = _stream;
-                }
-
-                var header = new byte[4];
-                header[0] = (byte)((message.Length >> 24) & 0xFF);
-                header[1] = (byte)((message.Length >> 16) & 0xFF);
-                header[2] = (byte)((message.Length >> 8) & 0xFF);
-                header[3] = (byte)(message.Length & 0xFF);
-
-                await localStream.WriteAsync(header, 0, header.Length);
-                await localStream.WriteAsync(message, 0, message.Length);
-                await localStream.FlushAsync();
-
-                await ReadImageReplyAsync(localStream);
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error,
-                    "SendImageAsync: Exception while exchanging frame: " + ex.Message);
-                DisconnectClient();
-            }
-            finally
-            {
-                _imageExchangeLock.Release();
-            }
+            // Fire-and-forget required to avoid blocking capture loop
+            // Validation above ensures buffers are correct before sending
+            _ = SendMessageAndReceiveReplyAsync(message);
         }
         static byte[] CreateFlatBufferMessage(byte[] yData, byte[] uvData, int width, int height)
         {
@@ -364,7 +327,7 @@ namespace HyperTizen
             var requestOffset = Request.EndRequest(builder);
 
             // Use regular Finish (NOT FinishSizePrefixed)
-            // HyperHDR expects a big-endian size prefix, added when the frame is sent.
+            // HyperHDR expects big-endian size prefix which we'll add manually in SendMessageAndReceiveReplyAsync()
             builder.Finish(requestOffset.Value);
             return builder.SizedByteArray();
         }
@@ -510,54 +473,77 @@ namespace HyperTizen
             }
         }
 
-        private static async Task ReadImageReplyAsync(NetworkStream localStream)
+        public static async Task ReadImageReply()
         {
-            byte[] header = new byte[4];
-            if (!await ReadExactAsync(localStream, header, 0, header.Length))
+            NetworkStream localStream;
+            lock (_lock)
             {
-                throw new System.IO.IOException("Connection closed while reading image reply header");
+                if (_client == null || !_client.Connected || _stream == null)
+                    return;
+                localStream = _stream;
             }
 
-            int replyLength = (header[0] << 24) |
-                              (header[1] << 16) |
-                              (header[2] << 8) |
-                              header[3];
-            if (replyLength <= 0 || replyLength > 10_000_000)
+            byte[] buffer = new byte[1024];
+            int bytesRead = await localStream.ReadAsync(buffer, 0, buffer.Length);
+            if (bytesRead > 0)
             {
-                throw new System.IO.IOException($"Invalid image reply size: {replyLength}");
-            }
 
-            byte[] replyData = new byte[header.Length + replyLength];
-            Array.Copy(header, replyData, header.Length);
-            if (!await ReadExactAsync(localStream, replyData, header.Length, replyLength))
-            {
-                throw new System.IO.IOException("Connection closed while reading image reply body");
-            }
+                byte[] replyData = new byte[bytesRead];
+                Array.Copy(buffer, replyData, bytesRead);
+                Reply reply = ParseReply(replyData);
 
-            Reply reply = ParseReply(replyData);
-            if (!string.IsNullOrEmpty(reply.Error))
+
+                if (!string.IsNullOrEmpty(reply.Error))
+                {
+                    Helper.Log.Write(Helper.eLogType.Error, "SendMessageAndReceiveReply: (closing tcp client now) Reply_Error: " + reply.Error);
+                    //Debug.WriteLine("SendMessageAndReceiveReply: Faulty msg(size:" + message.Length + "): " + BitConverter.ToString(message));
+                    DisconnectClient();
+                    return;
+                }
+            }
+            else
             {
-                Helper.Log.Write(Helper.eLogType.Error,
-                    "SendImageAsync: Reply_Error: " + reply.Error);
-                throw new System.IO.IOException("HyperHDR rejected image frame");
+                Helper.Log.Write(Helper.eLogType.Error, "SendMessageAndReceiveReply: (closing tcp client now) No Answer from Server.");
+                DisconnectClient();
+                return;
             }
         }
 
-        private static async Task<bool> ReadExactAsync(NetworkStream localStream, byte[] buffer, int offset, int count)
+        static async Task SendMessageAndReceiveReplyAsync(byte[] message)
         {
-            while (count > 0)
+            try
             {
-                int bytesRead = await localStream.ReadAsync(buffer, offset, count);
-                if (bytesRead <= 0)
+                NetworkStream localStream;
+                lock (_lock)
                 {
-                    return false;
+                    if (_client == null || !_client.Connected || _stream == null)
+                    {
+                        Helper.Log.Write(Helper.eLogType.Warning,
+                            $"SendMessageAndReceiveReplyAsync: Connection not ready");
+                        return;
+                    }
+                    localStream = _stream;
                 }
 
-                offset += bytesRead;
-                count -= bytesRead;
-            }
+                // HyperHDR expects BIG-ENDIAN 4-byte size prefix (not FlatBuffers standard little-endian)
+                var header = new byte[4];
+                header[0] = (byte)((message.Length >> 24) & 0xFF);  // Big-endian
+                header[1] = (byte)((message.Length >> 16) & 0xFF);
+                header[2] = (byte)((message.Length >> 8) & 0xFF);
+                header[3] = (byte)(message.Length & 0xFF);
 
-            return true;
+                await localStream.WriteAsync(header, 0, header.Length);
+                await localStream.WriteAsync(message, 0, message.Length);
+                await localStream.FlushAsync();
+
+                _ = ReadImageReply();
+            }
+            catch (Exception ex)
+            {
+                Helper.Log.Write(Helper.eLogType.Error, "SendMessageAndReceiveReply: Exception (closing tcp client now) Sending/Receiving: " + ex.Message);
+                DisconnectClient();
+                return;
+            }
         }
 
     }

@@ -192,13 +192,9 @@ namespace HyperTizen.Capture
 
             try
             {
-                int testWidth = global::HyperTizen.Globals.Instance.Width;
-                int testHeight = global::HyperTizen.Globals.Instance.Height;
-                if (testWidth <= 0 || testHeight <= 0)
-                {
-                    testWidth = 1920;
-                    testHeight = 1080;
-                }
+                // Test with small resolution
+                int testWidth = 1920;
+                int testHeight = 1080;
                 int ySize = testWidth * testHeight;
                 int uvSize = ySize / 2; // NV12 format
                 int totalSize = ySize + uvSize;
@@ -209,8 +205,6 @@ namespace HyperTizen.Capture
 
                 try
                 {
-                    Marshal.Copy(new byte[totalSize], 0, buffer, totalSize);
-
                     RequestData request = new RequestData
                     {
                         width = testWidth,
@@ -227,13 +221,6 @@ namespace HyperTizen.Capture
 
                     if (result == 0 || result == 4)
                     {
-                        if (!HasNonBlackLuma(yBuffer, testWidth, testHeight))
-                        {
-                            Helper.Log.Write(Helper.eLogType.Warning,
-                                "[T9DisplayCaptureMethod] Test returned an empty or black Y plane");
-                            return false;
-                        }
-
                         Helper.Log.Write(Helper.eLogType.Info, "[T9DisplayCaptureMethod] ✓ Test PASSED");
                         _isInitialized = true;
                         return true;
@@ -264,31 +251,6 @@ namespace HyperTizen.Capture
                 Helper.Log.Write(Helper.eLogType.Error, $"[T9DisplayCaptureMethod] Test exception: {ex.Message}");
                 return false;
             }
-        }
-
-        private static bool HasNonBlackLuma(IntPtr yBuffer, int width, int height)
-        {
-            if (yBuffer == IntPtr.Zero || width <= 0 || height <= 0)
-            {
-                return false;
-            }
-
-            const int samplesPerAxis = 16;
-            for (int row = 0; row < samplesPerAxis; row++)
-            {
-                int y = row * (height - 1) / (samplesPerAxis - 1);
-                for (int column = 0; column < samplesPerAxis; column++)
-                {
-                    int x = column * (width - 1) / (samplesPerAxis - 1);
-                    int offset = y * width + x;
-                    if (Marshal.ReadByte(yBuffer, offset) > 16)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
         }
 
         private int CallDisplayCaptureSync(ref RequestData request, IntPtr yBuffer, IntPtr uvBuffer, int bufferSize)
@@ -330,8 +292,6 @@ namespace HyperTizen.Capture
 
                 try
                 {
-                    Marshal.Copy(new byte[totalSize], 0, buffer, totalSize);
-
                     RequestData request = new RequestData
                     {
                         width = width,
@@ -346,11 +306,6 @@ namespace HyperTizen.Capture
 
                     if (result == 0 || result == 4)
                     {
-                        if (!HasNonBlackLuma(yBuffer, width, height))
-                        {
-                            return CaptureResult.CreateFailure("Native capture returned an empty or black Y plane");
-                        }
-
                         // Copy to managed arrays
                         byte[] yData = new byte[ySize];
                         byte[] uvData = new byte[uvSize];

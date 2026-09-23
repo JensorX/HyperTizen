@@ -13,7 +13,7 @@ HyperTizen is an experimental fork of a Hyperion/HyperHDR screen capturer for Sa
 **Current Status:**
 - **T8 SDK Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
 - **T7 SDK Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
-- **Pixel Sampling Capture Method** = IMPLEMENTED as the fallback; hardware color validation is still required
+- **Pixel Sampling Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
 
 **Critical Constraint:** Always verify methods on actual TV hardware - emulator testing is not reliable. Different Tizen firmware versions may have different API availability.
 
@@ -60,7 +60,7 @@ Startup Flow:
 3. Failed methods are automatically cleaned up
 4. Single active capture method used for entire session
 
-Capture Methods selected automatically (priority is determined by `CaptureMethodType`):
+Three Capture Methods (Priority Order):
 1. T8SdkCaptureMethod
    ├─ libvideo-capture.so.0.1.0
    ├─ Vtable implementation (Lock → getVideoMainYUV → Unlock)
@@ -76,12 +76,8 @@ Capture Methods selected automatically (priority is determined by `CaptureMethod
 3. PixelSamplingCaptureMethod
    ├─ libvideoenhance.so
    ├─ VideoEnhance_SamplePixel() - samples individual RGB pixels
-   ├─ Sends limited-range BT.601 NV12 to Hyperion
    ├─ Slower than frame capture, may have different availability
    └─ See: HyperTizen/Capture/PixelSamplingCaptureMethod.cs
-
-Research-only Tizen 9 methods:
-- `T9VideoCaptureMethod` and `T9DisplayCaptureMethod` are not selected automatically. Their native ABI and output plane layout still require hardware validation.
 ```
 
 **10-Step Service Startup:**

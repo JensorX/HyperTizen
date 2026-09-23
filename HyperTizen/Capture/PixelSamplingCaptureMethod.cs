@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using Tizen.System;
 
@@ -28,6 +29,7 @@ namespace HyperTizen.Capture
             public int Y;
         }
         private PixelCoordinate[] _pixelCoordinates = null;
+        private bool _colorDiagnosticsLogged;
 
         private const double OutputBrightnessGain = 1.25;
         private const double OutputSaturationGain = 1.20;
@@ -428,20 +430,38 @@ namespace HyperTizen.Capture
                     return false;
                 }
 
-                // Test 2: MeasurePosition (validate entry point exists with dummy coordinates)
-                int positionResult = positionFunc(0, 0, 0);
-                // Position may fail if called before proper setup, but entry point should exist
+                // Test 2: MeasurePosition with a valid screen coordinate.
+                int probeX = Math.Max(0, _condition.Width / 2);
+                int probeY = Math.Max(0, _condition.Height / 2);
+                int positionResult = positionFunc(0, probeX, probeY);
                 Helper.Log.Write(Helper.eLogType.Debug,
-                    $"PixelSampling: {variant}/{libPath} position entry point exists (result: {positionResult})");
+                    $"PixelSampling: {variant}/{libPath} position probe at " +
+                    $"({probeX}, {probeY}) result: {positionResult}");
+                if (positionResult < 0)
+                {
+                    Helper.Log.Write(Helper.eLogType.Debug,
+                        $"PixelSampling: {variant}/{libPath} position probe failed with error {positionResult}");
+                    return false;
+                }
 
-                // Test 3: MeasurePixel (validate entry point exists)
+                if (_condition.SleepMS > 0)
+                {
+                    Thread.Sleep(_condition.SleepMS);
+                }
+
+                // Test 3: MeasurePixel after the native settling interval.
                 Color dummyColor;
                 int pixelResult = pixelFunc(0, out dummyColor);
-                // Pixel may fail if no position set yet, but entry point should exist
                 Helper.Log.Write(Helper.eLogType.Debug,
-                    $"PixelSampling: {variant}/{libPath} pixel entry point exists (result: {pixelResult})");
+                    $"PixelSampling: {variant}/{libPath} pixel probe result: {pixelResult}");
+                if (pixelResult < 0)
+                {
+                    Helper.Log.Write(Helper.eLogType.Debug,
+                        $"PixelSampling: {variant}/{libPath} pixel probe failed with error {pixelResult}");
+                    return false;
+                }
 
-                // Success - all three entry points exist and condition succeeded
+                // Success - all three probes completed without an error.
                 _workingVariant = variant;
                 _workingLibPath = libPath;
                 Helper.Log.Write(Helper.eLogType.Info,
@@ -565,18 +585,18 @@ namespace HyperTizen.Capture
 
         /// <summary>
         /// Sample pixel colors from predefined screen positions
-        /// OPTIMIZED: Sets ALL positions first, then ONE sleep, then reads ALL pixels
-        /// This ensures all sampling happens at the same moment for temporal consistency
+        /// Sets and reads each native batch after its required settling interval.
         /// </summary>
         private Color[] GetColors()
         {
             Color[] colorData = new Color[_capturedPoints.Length];
+            bool captureFailed = false;
 
             int maxBatchSize = _condition.ScreenCapturePoints;
             if (maxBatchSize <= 0)
             {
                 Helper.Log.Write(Helper.eLogType.Error, "PixelSampling: ScreenCapturePoints is 0");
-                return colorData;
+                return null;
             }
 
             for (int batchStart = 0; batchStart < _capturedPoints.Length; batchStart += maxBatchSize)
@@ -596,6 +616,7 @@ namespace HyperTizen.Capture
                         Helper.Log.Write(Helper.eLogType.Error,
                             $"PixelSampling: MeasurePosition failed for point {pointIndex} at " +
                             $"({coordinateX}, {coordinateY}) with error {result}");
+                        captureFailed = true;
                     }
                 }
 
@@ -614,6 +635,7 @@ namespace HyperTizen.Capture
                     {
                         Helper.Log.Write(Helper.eLogType.Error,
                             $"PixelSampling: MeasurePixel failed for point {pointIndex} with error {result}");
+                        captureFailed = true;
                         color.R = 0;
                         color.G = 0;
                         color.B = 0;
@@ -629,6 +651,7 @@ namespace HyperTizen.Capture
                             Helper.Log.Write(Helper.eLogType.Warning,
                                 $"PixelSampling: Invalid color data at point {pointIndex}: " +
                                 $"R={color.R}, G={color.G}, B={color.B}");
+                            captureFailed = true;
                             color.R = Math.Max(0, Math.Min(1023, color.R));
                             color.G = Math.Max(0, Math.Min(1023, color.G));
                             color.B = Math.Max(0, Math.Min(1023, color.B));
@@ -639,7 +662,66 @@ namespace HyperTizen.Capture
                 }
             }
 
+            if (captureFailed)
+            {
+                Helper.Log.Write(Helper.eLogType.Warning,
+                    "PixelSampling: Capture discarded because at least one native sample failed");
+                return null;
+            }
+
+            LogColorDiagnostics(colorData);
             return colorData;
+        }
+
+        private void LogColorDiagnostics(Color[] colors)
+        {
+            if (_colorDiagnosticsLogged || colors.Length == 0)
+            {
+                return;
+            }
+
+            int minRed = int.MaxValue;
+            int minGreen = int.MaxValue;
+            int minBlue = int.MaxValue;
+            int maxRed = 0;
+            int maxGreen = 0;
+            int maxBlue = 0;
+            int totalRed = 0;
+            int totalGreen = 0;
+            int totalBlue = 0;
+            var samples = new StringBuilder();
+
+            for (int colorIndex = 0; colorIndex < colors.Length; colorIndex++)
+            {
+                Color color = colors[colorIndex];
+                minRed = Math.Min(minRed, color.R);
+                minGreen = Math.Min(minGreen, color.G);
+                minBlue = Math.Min(minBlue, color.B);
+                maxRed = Math.Max(maxRed, color.R);
+                maxGreen = Math.Max(maxGreen, color.G);
+                maxBlue = Math.Max(maxBlue, color.B);
+                totalRed += color.R;
+                totalGreen += color.G;
+                totalBlue += color.B;
+
+                if (colorIndex > 0)
+                {
+                    samples.Append(';');
+                }
+
+                samples.Append(color.R)
+                    .Append('/')
+                    .Append(color.G)
+                    .Append('/')
+                    .Append(color.B);
+            }
+
+            Helper.Log.Write(Helper.eLogType.Info,
+                $"PixelSampling: Raw RGB diagnostics variant={_workingVariant}/{_workingLibPath}, " +
+                $"min={minRed}/{minGreen}/{minBlue}, max={maxRed}/{maxGreen}/{maxBlue}, " +
+                $"avg={totalRed / colors.Length}/{totalGreen / colors.Length}/{totalBlue / colors.Length}, " +
+                $"samples={samples}");
+            _colorDiagnosticsLogged = true;
         }
 
         private void BoostColors(Color[] colors)
@@ -969,6 +1051,7 @@ namespace HyperTizen.Capture
         public void Cleanup()
         {
             _isInitialized = false;
+            _colorDiagnosticsLogged = false;
             Helper.Log.Write(Helper.eLogType.Debug, "PixelSampling: Cleaned up");
         }
     }

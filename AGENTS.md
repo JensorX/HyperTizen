@@ -60,35 +60,28 @@ Startup Flow:
 3. Failed methods are automatically cleaned up
 4. Single active capture method used for entire session
 
-Capture Methods (priority is determined by `CaptureMethodType`):
-1. T9VideoCaptureMethod
-   ├─ Native Tizen 9 video/YUV capture
-   ├─ Rejects empty or black test frames
-   └─ See: HyperTizen/Capture/T9VideoCaptureMethod.cs
-
-2. T9DisplayCaptureMethod
-   ├─ Native Tizen 9 display/YUV capture
-   ├─ Rejects empty or black test frames
-   └─ See: HyperTizen/Capture/T9DisplayCaptureMethod.cs
-
-3. T8SdkCaptureMethod
+Capture Methods selected automatically (priority is determined by `CaptureMethodType`):
+1. T8SdkCaptureMethod
    ├─ libvideo-capture.so.0.1.0
    ├─ Vtable implementation (Lock → getVideoMainYUV → Unlock)
    ├─ May not be available on all firmware versions
    └─ See: HyperTizen/Capture/T8SdkCaptureMethod.cs
 
-4. T7SdkCaptureMethod
+2. T7SdkCaptureMethod
    ├─ libsec-video-capture.so.0
    ├─ Legacy API from Tizen 7.0 and earlier
    ├─ May not exist on Tizen 8.0+ firmware
    └─ See: HyperTizen/Capture/T7SdkCaptureMethod.cs
 
-5. PixelSamplingCaptureMethod
+3. PixelSamplingCaptureMethod
    ├─ libvideoenhance.so
    ├─ VideoEnhance_SamplePixel() - samples individual RGB pixels
    ├─ Sends limited-range BT.601 NV12 to Hyperion
    ├─ Slower than frame capture, may have different availability
    └─ See: HyperTizen/Capture/PixelSamplingCaptureMethod.cs
+
+Research-only Tizen 9 methods:
+- `T9VideoCaptureMethod` and `T9DisplayCaptureMethod` are not selected automatically. Their native ABI and output plane layout still require hardware validation.
 ```
 
 **10-Step Service Startup:**

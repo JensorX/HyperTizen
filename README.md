@@ -31,9 +31,9 @@ This fork is focused on implementing screen capture functionality for **Tizen 8.
 - Requires hardware testing to verify color accuracy and coordinate mapping
 - Pretty bad performance, but it works! Sorta. Basically takes the dominant color on the screen. And flickering.
 
-**⚠️ Native Capture Methods**: Tizen 9 video and display capture are attempted before Pixel Sampling. Their native YUV range still requires hardware verification.
+**⚠️ Native Capture Methods**: Tizen 9 video and display capture remain research implementations. They are currently excluded from automatic selection because their native ABI and YUV plane layout are not validated; Pixel Sampling is used as the safe fallback.
 
-**Capture Architecture:** HyperTizen uses a systematic `ICaptureMethod` interface with automatic fallback. The `CaptureMethodSelector` tests available methods on startup (T9 Video → T9 Display → T8 SDK → T7 SDK → Pixel Sampling) and selects the first working method.
+**Capture Architecture:** HyperTizen uses a systematic `ICaptureMethod` interface with automatic fallback. The `CaptureMethodSelector` tests available methods on startup (T8 SDK → T7 SDK → Pixel Sampling) and selects the first working method. T9 native methods are kept separate until their ABI and output format are verified on hardware.
 
 ---
 

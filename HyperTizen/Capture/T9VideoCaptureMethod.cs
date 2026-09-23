@@ -310,8 +310,8 @@ namespace HyperTizen.Capture
 
                     int result = -999; // Default failure
 
-                    Marshal.InitBlock(yBuffer, 0, (uint)ySize);
-                    Marshal.InitBlock(uvBuffer, 0, (uint)uvSize);
+                    Marshal.Copy(new byte[ySize], 0, yBuffer, ySize);
+                    Marshal.Copy(new byte[uvSize], 0, uvBuffer, uvSize);
                     result = CallCapture(entryPointName, ref input, ref output);
 
                     Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] {entryPointName} returned: {result}");
@@ -575,8 +575,8 @@ namespace HyperTizen.Capture
 
                 try
                 {
-                    Marshal.InitBlock(yBuffer, 0, (uint)ySize);
-                    Marshal.InitBlock(uvBuffer, 0, (uint)uvSize);
+                    Marshal.Copy(new byte[ySize], 0, yBuffer, ySize);
+                    Marshal.Copy(new byte[uvSize], 0, uvBuffer, uvSize);
 
                     // Setup input parameters
                     InputParams input = new InputParams

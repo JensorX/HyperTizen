@@ -209,7 +209,7 @@ namespace HyperTizen.Capture
 
                 try
                 {
-                    Marshal.InitBlock(buffer, 0, (uint)totalSize);
+                    Marshal.Copy(new byte[totalSize], 0, buffer, totalSize);
 
                     RequestData request = new RequestData
                     {
@@ -330,7 +330,7 @@ namespace HyperTizen.Capture
 
                 try
                 {
-                    Marshal.InitBlock(buffer, 0, (uint)totalSize);
+                    Marshal.Copy(new byte[totalSize], 0, buffer, totalSize);
 
                     RequestData request = new RequestData
                     {

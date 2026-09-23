@@ -25,14 +25,15 @@ This fork is focused on implementing screen capture functionality for **Tizen 8.
 
 **✅ Pixel Sampling Capture Method**: Now **IMPLEMENTED** using `libvideoenhance.so`
 - Samples 16 pixels from screen edges for ambient lighting
-- Converts 10-bit RGB to NV12 format for FlatBuffers transmission
+- Treats the original VideoEnhance RGB components as 8-bit values before NV12 conversion
+- Converts RGB to the limited-range BT.601 NV12 format expected by Hyperion
 - Supports both Tizen 6 and Tizen 7+ API variants
 - Requires hardware testing to verify color accuracy and coordinate mapping
 - Pretty bad performance, but it works! Sorta. Basically takes the dominant color on the screen. And flickering.
 
-**⚠️ Other Capture Methods**: T8SDK and T7SDK remain as scaffolding (not yet implemented)
+**⚠️ Native Capture Methods**: Tizen 9 video and display capture are attempted before Pixel Sampling. Their native YUV range still requires hardware verification.
 
-**Capture Architecture:** HyperTizen uses a systematic `ICaptureMethod` interface with automatic fallback. The `CaptureMethodSelector` tests available methods on startup (T8SDK → T7SDK → PixelSampling) and selects the first working method.
+**Capture Architecture:** HyperTizen uses a systematic `ICaptureMethod` interface with automatic fallback. The `CaptureMethodSelector` tests available methods on startup (T9 Video → T9 Display → T8 SDK → T7 SDK → Pixel Sampling) and selects the first working method.
 
 ---
 
@@ -140,10 +141,11 @@ The control panel is perfect for:
 - **Log Level Filtering**: Client-side filtering in browser (Debug/Info/Warning/Error/Performance)
 - **✅ Pixel Sampling Capture**: Full implementation using `libvideoenhance.so`
   - 16-point edge sampling for ambient lighting
-  - 10-bit to 8-bit RGB conversion
+   - Native 8-bit RGB handling based on the original VideoEnhance consumer
+   - Limited-range BT.601 RGB-to-NV12 conversion
   - RGB to NV12 color space conversion
   - FlatBuffers integration for HyperHDR/Hyperion
-  - **Status**: Code complete, terrible
+   - **Status**: Code complete, hardware color validation pending
 
 ### Partially Implemented
 
@@ -163,8 +165,9 @@ To test the pixel sampling capture method on your Tizen 8.0+ TV:
 1. **Build and install** the updated HyperTizen package on your TV
 2. **Start the service** and monitor via WebSocket logs
 3. **Watch for log messages** showing:
+   - `CAPTURE METHOD SELECTED` / `CaptureMethodSelector: ✓ SELECTED`
    - `PixelSampling: Library found, available`
-   - Color values being sampled (10-bit RGB)
+   - Color values being sampled (native RGB range)
 4. **Connect to HyperHDR/Hyperion** and verify ambient lighting displays correctly
 5. **Test color accuracy**: Display pure colors (red, green, blue) and verify they appear correctly
 6. **Test edge mapping**: Move content along edges and verify LEDs respond in correct direction

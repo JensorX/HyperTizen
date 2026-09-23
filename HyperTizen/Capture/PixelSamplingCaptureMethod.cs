@@ -209,7 +209,8 @@ namespace HyperTizen.Capture
         #region Native Structs
 
         /// <summary>
-        /// Color struct for 10-bit RGB values (0-1023)
+        /// RGB values returned by VideoEnhance. The native ABI uses 32-bit fields;
+        /// the original HyperTizen consumer treats the component values as 8-bit.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         public struct Color
@@ -567,82 +568,67 @@ namespace HyperTizen.Capture
         private Color[] GetColors()
         {
             Color[] colorData = new Color[_capturedPoints.Length];
+            int maxBatchSize = _condition.ScreenCapturePoints;
 
-            if (_condition.ScreenCapturePoints == 0)
+            if (maxBatchSize <= 0)
             {
                 Helper.Log.Write(Helper.eLogType.Error, "PixelSampling: ScreenCapturePoints is 0");
                 return colorData;
             }
 
-            // PHASE 1: Set ALL measurement positions first (no delays between batches)
-            int i = 0;
-            while (i < _capturedPoints.Length)
+            for (int batchStart = 0; batchStart < _capturedPoints.Length; batchStart += maxBatchSize)
             {
-                // Set positions for this batch
-                for (int j = 0; j < _condition.ScreenCapturePoints && i < _capturedPoints.Length; j++)
+                int batchSize = Math.Min(maxBatchSize, _capturedPoints.Length - batchStart);
+
+                for (int slot = 0; slot < batchSize; slot++)
                 {
-                    // Use pre-calculated pixel coordinates
-                    int x = _pixelCoordinates[i].X;
-                    int y = _pixelCoordinates[i].Y;
+                    int pointIndex = batchStart + slot;
+                    int x = _pixelCoordinates[pointIndex].X;
+                    int y = _pixelCoordinates[pointIndex].Y;
+                    int result = CallMeasurePosition(slot, x, y);
 
-                    // Set the measurement position
-                    int res = CallMeasurePosition(j, x, y);
-
-                    if (res < 0)
+                    if (result < 0)
                     {
                         Helper.Log.Write(Helper.eLogType.Error,
-                            $"PixelSampling: MeasurePosition failed for point {i} at ({x}, {y}) with error {res}");
+                            $"PixelSampling: MeasurePosition failed for point {pointIndex} at ({x}, {y}) with error {result}");
                     }
-
-                    i++;
                 }
-            }
 
-            // PHASE 2: Single sleep after ALL positions are set
-            // This ensures all measurements happen at approximately the same time
-            if (_condition.SleepMS > 0)
-            {
-                Thread.Sleep(_condition.SleepMS);
-            }
-
-            // PHASE 3: Read ALL pixel colors in batches
-            i = 0;
-            while (i < _capturedPoints.Length)
-            {
-                // Read pixels for this batch
-                for (int j = 0; j < _condition.ScreenCapturePoints && i < _capturedPoints.Length; j++)
+                if (_condition.SleepMS > 0)
                 {
-                    Color color;
-                    int res = CallMeasurePixel(j, out color);
+                    Thread.Sleep(_condition.SleepMS);
+                }
 
-                    if (res < 0)
+                for (int slot = 0; slot < batchSize; slot++)
+                {
+                    int pointIndex = batchStart + slot;
+                    Color color;
+                    int result = CallMeasurePixel(slot, out color);
+
+                    if (result < 0)
                     {
                         Helper.Log.Write(Helper.eLogType.Error,
-                            $"PixelSampling: MeasurePixel failed for point {i} with error {res}");
-                        // Use black as fallback
+                            $"PixelSampling: MeasurePixel failed for point {pointIndex} with error {result}");
                         color.R = 0;
                         color.G = 0;
                         color.B = 0;
                     }
                     else
                     {
-                        // Validate color data (10-bit values should be 0-1023)
                         bool invalidColorData = color.R > 1023 || color.G > 1023 || color.B > 1023 ||
                                                 color.R < 0 || color.G < 0 || color.B < 0;
 
                         if (invalidColorData)
                         {
                             Helper.Log.Write(Helper.eLogType.Warning,
-                                $"PixelSampling: Invalid color data at point {i}: R={color.R}, G={color.G}, B={color.B}");
-                            // Clamp to valid range
+                                $"PixelSampling: Invalid color data at point {pointIndex}: R={color.R}, G={color.G}, B={color.B}");
                             color.R = Math.Max(0, Math.Min(1023, color.R));
                             color.G = Math.Max(0, Math.Min(1023, color.G));
                             color.B = Math.Max(0, Math.Min(1023, color.B));
                         }
                     }
 
-                    colorData[i] = color;
-                    i++;
+                    colorData[pointIndex] = color;
                 }
             }
 
@@ -650,9 +636,8 @@ namespace HyperTizen.Capture
         }
 
         /// <summary>
-        /// Convert sampled pixel colors to NV12 format using BT.2020 color space
+        /// Convert sampled pixel colors to the limited-range BT.601 NV12 format
         /// Creates a virtual 64x48 image with sampled colors mapped to screen edges
-        /// Uses BT.2020 coefficients for HDR10+ compatibility
         /// </summary>
         private (byte[] yData, byte[] uvData) ConvertColorsToNV12(Color[] colors)
         {
@@ -663,13 +648,28 @@ namespace HyperTizen.Capture
             byte[] yData = new byte[width * height];
             byte[] uvData = new byte[width * height / 2]; // UV plane is half the size
 
-            // Create virtual RGB image (same logic as original ToImage method)
+            // Create a representative image so unmeasured pixels do not become black.
             byte[] rgbImage = new byte[width * height * 3]; // RGB888
 
-            // Initialize with black
-            for (int i = 0; i < rgbImage.Length; i++)
+            int averageRed = 0;
+            int averageGreen = 0;
+            int averageBlue = 0;
+            for (int colorIndex = 0; colorIndex < colors.Length; colorIndex++)
             {
-                rgbImage[i] = 0;
+                averageRed += colors[colorIndex].R;
+                averageGreen += colors[colorIndex].G;
+                averageBlue += colors[colorIndex].B;
+            }
+
+            byte fillRed = colors.Length == 0 ? (byte)0 : ScaleTo8Bit(averageRed / colors.Length);
+            byte fillGreen = colors.Length == 0 ? (byte)0 : ScaleTo8Bit(averageGreen / colors.Length);
+            byte fillBlue = colors.Length == 0 ? (byte)0 : ScaleTo8Bit(averageBlue / colors.Length);
+            for (int pixelIndex = 0; pixelIndex < width * height; pixelIndex++)
+            {
+                int rgbIndex = pixelIndex * 3;
+                rgbImage[rgbIndex + 0] = fillRed;
+                rgbImage[rgbIndex + 1] = fillGreen;
+                rgbImage[rgbIndex + 2] = fillBlue;
             }
 
             // 16-point color mapping (4 points per edge)
@@ -826,7 +826,7 @@ namespace HyperTizen.Capture
                 }
             }
 
-            // Convert RGB to NV12 using BT.2020 color space (HDR10+ compatible)
+            // Hyperion decodes NV12 with the BT.601 limited-range formula.
             // Y plane
             for (int y = 0; y < height; y++)
             {
@@ -837,8 +837,8 @@ namespace HyperTizen.Capture
                     byte g = rgbImage[rgbIdx + 1];
                     byte b = rgbImage[rgbIdx + 2];
 
-                    // BT.2020 Y = 0.2627R + 0.678G + 0.0593B
-                    int yVal = (int)(0.2627 * r + 0.678 * g + 0.0593 * b);
+                    // Y = 16 + (66R + 129G + 25B) / 256
+                    int yVal = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
                     yData[y * width + x] = (byte)Math.Max(0, Math.Min(255, yVal));
                 }
             }
@@ -848,16 +848,28 @@ namespace HyperTizen.Capture
             {
                 for (int x = 0; x < width; x += 2)
                 {
-                    // Sample 2x2 block
-                    int rgbIdx = (y * width + x) * 3;
-                    byte r = rgbImage[rgbIdx + 0];
-                    byte g = rgbImage[rgbIdx + 1];
-                    byte b = rgbImage[rgbIdx + 2];
+                    int redTotal = 0;
+                    int greenTotal = 0;
+                    int blueTotal = 0;
+                    for (int sampleY = 0; sampleY < 2; sampleY++)
+                    {
+                        for (int sampleX = 0; sampleX < 2; sampleX++)
+                        {
+                            int rgbIndex = ((y + sampleY) * width + x + sampleX) * 3;
+                            redTotal += rgbImage[rgbIndex + 0];
+                            greenTotal += rgbImage[rgbIndex + 1];
+                            blueTotal += rgbImage[rgbIndex + 2];
+                        }
+                    }
 
-                    // BT.2020 U = -0.1396R - 0.36037G + 0.5B + 128
-                    // BT.2020 V = 0.5R - 0.4598G - 0.0402B + 128
-                    int uVal = (int)(-0.1396 * r - 0.36037 * g + 0.5 * b + 128);
-                    int vVal = (int)(0.5 * r - 0.4598 * g - 0.0402 * b + 128);
+                    int r = (redTotal + 2) / 4;
+                    int g = (greenTotal + 2) / 4;
+                    int b = (blueTotal + 2) / 4;
+
+                    // U = 128 + (-38R - 74G + 112B) / 256
+                    // V = 128 + (112R - 94G - 18B) / 256
+                    int uVal = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+                    int vVal = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
 
                     int uvIdx = (y / 2) * width + x;
                     uvData[uvIdx + 0] = (byte)Math.Max(0, Math.Min(255, uVal)); // U
@@ -869,13 +881,13 @@ namespace HyperTizen.Capture
         }
 
         /// <summary>
-        /// Convert 10-bit color value (0-1023) to 8-bit (0-255) using proper scaling
-        /// Uses scaling rather than clamping to preserve color accuracy
+        /// Normalize a VideoEnhance color component for RGB888 conversion.
+        /// Values are already 8-bit in the original API contract; larger values
+        /// are clipped defensively instead of being divided by 1023.
         /// </summary>
         private byte ScaleTo8Bit(int value)
         {
-            // Scale 10-bit (0-1023) to 8-bit (0-255)
-            return (byte)Math.Min(255, value * 255 / 1023);
+            return (byte)Math.Max(0, Math.Min(255, value));
         }
 
         /// <summary>

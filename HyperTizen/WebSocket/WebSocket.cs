@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
-using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Xml.Linq;
 using Newtonsoft.Json;
 using HyperTizen.WebSocket.DataTypes;
 using Rssdp;
@@ -17,12 +15,6 @@ namespace HyperTizen.WebSocket
 {
     public class WSServer
     {
-        private const string HyperHdrFallbackBaseUrl = "http://192.168.178.23:8090/";
-        private static readonly HttpClient DiscoveryHttpClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(3)
-        };
-
         private HttpListener _httpListener;
         private List<System.Net.WebSockets.WebSocket> _connectedClients = new List<System.Net.WebSockets.WebSocket>();
         private readonly object _clientsLock = new object();
@@ -329,124 +321,19 @@ namespace HyperTizen.WebSocket
         private async Task<List<SSDPDevice>> ScanSSDPAsync()
         {
             var devices = new List<SSDPDevice>();
-            try
+            using (var deviceLocator = new SsdpDeviceLocator())
             {
-                using (var deviceLocator = new SsdpDeviceLocator())
+                var foundDevices = await deviceLocator.SearchAsync();
+                foreach (var foundDevice in foundDevices)
                 {
-                    var foundDevices = await deviceLocator.SearchAsync();
-                    foreach (var foundDevice in foundDevices)
-                    {
-                        if (!usnList.Contains(foundDevice.NotificationType)) continue;
+                    if (!usnList.Contains(foundDevice.NotificationType)) continue;
 
-                        try
-                        {
-                            var fullDevice = await foundDevice.GetDeviceInfo();
-                            Uri descLocation = foundDevice.DescriptionLocation;
-                            devices.Add(new SSDPDevice(
-                                fullDevice.FriendlyName,
-                                descLocation.GetLeftPart(UriPartial.Authority)));
-                        }
-                        catch (Exception ex)
-                        {
-                            Helper.Log.Write(Helper.eLogType.Warning,
-                                $"SSDP device description could not be loaded from {foundDevice.DescriptionLocation}: {ex.Message}");
-                        }
-                    }
+                    var fullDevice = await foundDevice.GetDeviceInfo();
+                    Uri descLocation = foundDevice.DescriptionLocation;
+                    devices.Add(new SSDPDevice(fullDevice.FriendlyName, descLocation.OriginalString.Replace(descLocation.PathAndQuery, "")));
                 }
             }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Warning,
-                    $"SSDP scan failed; continuing with the HTTP fallback probe: {ex.Message}");
-            }
-
-            // HyperHDR may be reachable over HTTP while its SSDP multicast is blocked
-            // by a bridged/container network. Probe the known LAN URL and list it as
-            // a fallback, while keeping the SSDP scan useful if the probe fails.
-            SSDPDevice httpFallback = await TryDiscoverHyperHdrOverHttpAsync();
-            if (httpFallback != null)
-            {
-                var fallbackUri = new Uri(HyperHdrFallbackBaseUrl);
-                if (!devices.Exists(device => IsSameEndpoint(device.UrlBase, fallbackUri)))
-                {
-                    devices.Add(httpFallback);
-                    Helper.Log.Write(Helper.eLogType.Info,
-                        $"HyperHDR discovered through HTTP fallback at {fallbackUri.GetLeftPart(UriPartial.Authority)}");
-                }
-            }
-
             return devices;
-        }
-
-        private static async Task<SSDPDevice> TryDiscoverHyperHdrOverHttpAsync()
-        {
-            var fallbackUri = new Uri(HyperHdrFallbackBaseUrl);
-            var descriptionUri = new Uri(fallbackUri, "description.xml");
-
-            try
-            {
-                using (var response = await DiscoveryHttpClient.GetAsync(descriptionUri))
-                {
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Debug,
-                            $"HyperHDR HTTP fallback probe returned {(int)response.StatusCode}");
-                        return null;
-                    }
-
-                    string description = await response.Content.ReadAsStringAsync();
-                    XDocument document = XDocument.Parse(description);
-                    string friendlyName = GetDescriptionValue(document, "friendlyName");
-                    string modelName = GetDescriptionValue(document, "modelName");
-                    bool isHyperHdr = string.Equals(modelName, "HyperHDR", StringComparison.OrdinalIgnoreCase) ||
-                        (!string.IsNullOrWhiteSpace(friendlyName) &&
-                         friendlyName.IndexOf("HyperHDR", StringComparison.OrdinalIgnoreCase) >= 0);
-
-                    if (!isHyperHdr)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Debug,
-                            "HTTP fallback endpoint responded, but its UPnP description is not HyperHDR");
-                        return null;
-                    }
-
-                    return new SSDPDevice(
-                        $"HyperHDR ({fallbackUri.Host}) [HTTP fallback]",
-                        fallbackUri.GetLeftPart(UriPartial.Authority));
-                }
-            }
-            catch (TaskCanceledException)
-            {
-                Helper.Log.Write(Helper.eLogType.Debug,
-                    $"HyperHDR HTTP fallback probe timed out at {descriptionUri}");
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Debug,
-                    $"HyperHDR HTTP fallback probe failed at {descriptionUri}: {ex.Message}");
-            }
-
-            return null;
-        }
-
-        private static string GetDescriptionValue(XDocument document, string elementName)
-        {
-            foreach (XElement element in document.Descendants())
-            {
-                if (element.Name.LocalName == elementName)
-                {
-                    return element.Value;
-                }
-            }
-
-            return null;
-        }
-
-        private static bool IsSameEndpoint(string url, Uri endpoint)
-        {
-            Uri existingUri;
-            return Uri.TryCreate(url, UriKind.Absolute, out existingUri) &&
-                string.Equals(existingUri.Host, endpoint.Host, StringComparison.OrdinalIgnoreCase) &&
-                existingUri.Port == endpoint.Port;
         }
 
         private async Task<string> ReadConfigAsync(ReadConfigEvent readConfigEvent)

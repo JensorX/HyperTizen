@@ -60,39 +60,25 @@ Startup Flow:
 3. Failed methods are automatically cleaned up
 4. Single active capture method used for entire session
 
-Five Capture Methods (Priority Order):
-1. T9VideoCaptureMethod
-   ├─ libvideo-capture.so variants
-   ├─ Tests available C entry points and NV12 output
-   ├─ Experimental native ABI; select only after its capture test passes
-   └─ See: HyperTizen/Capture/T9VideoCaptureMethod.cs
-
-2. T9DisplayCaptureMethod
-   ├─ libdisplay-capture-api.so variants
-   ├─ Alternative Tizen 9 full-frame capture path
-   ├─ Experimental; select only after its capture test passes
-   └─ See: HyperTizen/Capture/T9DisplayCaptureMethod.cs
-
-3. T8SdkCaptureMethod
+Three Capture Methods (Priority Order):
+1. T8SdkCaptureMethod
    ├─ libvideo-capture.so.0.1.0
    ├─ Vtable implementation (Lock → getVideoMainYUV → Unlock)
    ├─ May not be available on all firmware versions
    └─ See: HyperTizen/Capture/T8SdkCaptureMethod.cs
 
-4. T7SdkCaptureMethod
+2. T7SdkCaptureMethod
    ├─ libsec-video-capture.so.0
    ├─ Legacy API from Tizen 7.0 and earlier
    ├─ May not exist on Tizen 8.0+ firmware
    └─ See: HyperTizen/Capture/T7SdkCaptureMethod.cs
 
-5. PixelSamplingCaptureMethod
+3. PixelSamplingCaptureMethod
    ├─ libvideoenhance.so
    ├─ VideoEnhance_SamplePixel() - samples individual RGB pixels
-   ├─ Synthetic edge-sampling fallback, not full-frame capture
+   ├─ Slower than frame capture, may have different availability
    └─ See: HyperTizen/Capture/PixelSamplingCaptureMethod.cs
 ```
-
-**Hardware observation:** The user reports that the build under `Downloads/HyperTizen-main` produced a complete colored border, while the current build shows only a top strip. That older selector tried the two T9 full-frame methods first; keep them enabled and use the startup log (`CAPTURE METHOD SELECTED`) to confirm which one passes on hardware.
 
 **10-Step Service Startup:**
 1. Service startup (initialize lifecycle management)
@@ -112,8 +98,6 @@ Five Capture Methods (Priority Order):
 - **`HyperTizen/Capture/ICaptureMethod.cs`** - Interface for all capture methods
 - **`HyperTizen/Capture/CaptureMethodSelector.cs`** - Tests and selects best method
 - **`HyperTizen/Capture/CaptureResult.cs`** - Standardized capture result wrapper
-- **`HyperTizen/Capture/T9VideoCaptureMethod.cs`** - Experimental Tizen 9 video capture
-- **`HyperTizen/Capture/T9DisplayCaptureMethod.cs`** - Experimental Tizen 9 display capture
 - **`HyperTizen/Capture/T8SdkCaptureMethod.cs`** - T8 API (implementation complete)
 - **`HyperTizen/Capture/T7SdkCaptureMethod.cs`** - T7 legacy API (missing on T8+)
 - **`HyperTizen/Capture/PixelSamplingCaptureMethod.cs`** - Pixel sampling approach
@@ -661,10 +645,6 @@ Screenshot showing exported functions from `libvideo-capture-impl-sec.so`:
 curl http://<TV_IP>:45678
 # Should return logs.html content
 ```
-
-### HyperHDR Missing from SSDP
-
-HyperHDR may be reachable over HTTP while SSDP discovery fails, especially in a bridged/container network. Its UPnP description can advertise an internal-only address, and UDP multicast on port 1900 may not be forwarded. The control service supplements SSDP with an HTTP description probe for `http://192.168.178.23:8090/description.xml`; a matching HyperHDR description is added to the discovered-server list. If the address changes, update the fallback URL in [HyperTizen/WebSocket/WebSocket.cs](HyperTizen/WebSocket/WebSocket.cs). The web UI port (often 8090) is not the capture port; HyperTizen connects to the FlatBuffers TCP port (19400 by default), which must also be exposed and reachable from the TV.
 
 ### Pixel Sampling Performance
 

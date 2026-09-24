@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 using Tizen.System;
 
@@ -29,10 +28,6 @@ namespace HyperTizen.Capture
             public int Y;
         }
         private PixelCoordinate[] _pixelCoordinates = null;
-        private bool _colorDiagnosticsLogged;
-
-        private const double OutputBrightnessGain = 1.25;
-        private const double OutputSaturationGain = 1.20;
 
         // 16-point sampling grid (normalized coordinates 0.0-1.0)
         // 4 points per edge for better color representation
@@ -214,8 +209,7 @@ namespace HyperTizen.Capture
         #region Native Structs
 
         /// <summary>
-        /// RGB values returned by VideoEnhance. The native ABI uses 32-bit fields;
-        /// the component values are 8-bit RGB values.
+        /// Color struct for 10-bit RGB values (0-1023)
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         public struct Color
@@ -430,38 +424,20 @@ namespace HyperTizen.Capture
                     return false;
                 }
 
-                // Test 2: MeasurePosition with a valid screen coordinate.
-                int probeX = Math.Max(0, _condition.Width / 2);
-                int probeY = Math.Max(0, _condition.Height / 2);
-                int positionResult = positionFunc(0, probeX, probeY);
+                // Test 2: MeasurePosition (validate entry point exists with dummy coordinates)
+                int positionResult = positionFunc(0, 0, 0);
+                // Position may fail if called before proper setup, but entry point should exist
                 Helper.Log.Write(Helper.eLogType.Debug,
-                    $"PixelSampling: {variant}/{libPath} position probe at " +
-                    $"({probeX}, {probeY}) result: {positionResult}");
-                if (positionResult < 0)
-                {
-                    Helper.Log.Write(Helper.eLogType.Debug,
-                        $"PixelSampling: {variant}/{libPath} position probe failed with error {positionResult}");
-                    return false;
-                }
+                    $"PixelSampling: {variant}/{libPath} position entry point exists (result: {positionResult})");
 
-                if (_condition.SleepMS > 0)
-                {
-                    Thread.Sleep(_condition.SleepMS);
-                }
-
-                // Test 3: MeasurePixel after the native settling interval.
+                // Test 3: MeasurePixel (validate entry point exists)
                 Color dummyColor;
                 int pixelResult = pixelFunc(0, out dummyColor);
+                // Pixel may fail if no position set yet, but entry point should exist
                 Helper.Log.Write(Helper.eLogType.Debug,
-                    $"PixelSampling: {variant}/{libPath} pixel probe result: {pixelResult}");
-                if (pixelResult < 0)
-                {
-                    Helper.Log.Write(Helper.eLogType.Debug,
-                        $"PixelSampling: {variant}/{libPath} pixel probe failed with error {pixelResult}");
-                    return false;
-                }
+                    $"PixelSampling: {variant}/{libPath} pixel entry point exists (result: {pixelResult})");
 
-                // Success - all three probes completed without an error.
+                // Success - all three entry points exist and condition succeeded
                 _workingVariant = variant;
                 _workingLibPath = libPath;
                 Helper.Log.Write(Helper.eLogType.Info,
@@ -585,57 +561,65 @@ namespace HyperTizen.Capture
 
         /// <summary>
         /// Sample pixel colors from predefined screen positions
-        /// Sets and reads each native batch after its required settling interval.
+        /// OPTIMIZED: Sets ALL positions first, then ONE sleep, then reads ALL pixels
+        /// This ensures all sampling happens at the same moment for temporal consistency
         /// </summary>
         private Color[] GetColors()
         {
             Color[] colorData = new Color[_capturedPoints.Length];
-            bool captureFailed = false;
 
-            int maxBatchSize = _condition.ScreenCapturePoints;
-            if (maxBatchSize <= 0)
+            if (_condition.ScreenCapturePoints == 0)
             {
                 Helper.Log.Write(Helper.eLogType.Error, "PixelSampling: ScreenCapturePoints is 0");
-                return null;
+                return colorData;
             }
 
-            for (int batchStart = 0; batchStart < _capturedPoints.Length; batchStart += maxBatchSize)
+            // PHASE 1: Set ALL measurement positions first (no delays between batches)
+            int i = 0;
+            while (i < _capturedPoints.Length)
             {
-                int batchSize = Math.Min(maxBatchSize, _capturedPoints.Length - batchStart);
-
-                for (int slot = 0; slot < batchSize; slot++)
+                // Set positions for this batch
+                for (int j = 0; j < _condition.ScreenCapturePoints && i < _capturedPoints.Length; j++)
                 {
-                    int pointIndex = batchStart + slot;
-                    int coordinateX = _pixelCoordinates[pointIndex].X;
-                    int coordinateY = _pixelCoordinates[pointIndex].Y;
+                    // Use pre-calculated pixel coordinates
+                    int x = _pixelCoordinates[i].X;
+                    int y = _pixelCoordinates[i].Y;
 
-                    int result = CallMeasurePosition(slot, coordinateX, coordinateY);
+                    // Set the measurement position
+                    int res = CallMeasurePosition(j, x, y);
 
-                    if (result < 0)
+                    if (res < 0)
                     {
                         Helper.Log.Write(Helper.eLogType.Error,
-                            $"PixelSampling: MeasurePosition failed for point {pointIndex} at " +
-                            $"({coordinateX}, {coordinateY}) with error {result}");
-                        captureFailed = true;
+                            $"PixelSampling: MeasurePosition failed for point {i} at ({x}, {y}) with error {res}");
                     }
-                }
 
-                if (_condition.SleepMS > 0)
-                {
-                    Thread.Sleep(_condition.SleepMS);
+                    i++;
                 }
+            }
 
-                for (int slot = 0; slot < batchSize; slot++)
+            // PHASE 2: Single sleep after ALL positions are set
+            // This ensures all measurements happen at approximately the same time
+            if (_condition.SleepMS > 0)
+            {
+                Thread.Sleep(_condition.SleepMS);
+            }
+
+            // PHASE 3: Read ALL pixel colors in batches
+            i = 0;
+            while (i < _capturedPoints.Length)
+            {
+                // Read pixels for this batch
+                for (int j = 0; j < _condition.ScreenCapturePoints && i < _capturedPoints.Length; j++)
                 {
-                    int pointIndex = batchStart + slot;
                     Color color;
-                    int result = CallMeasurePixel(slot, out color);
+                    int res = CallMeasurePixel(j, out color);
 
-                    if (result < 0)
+                    if (res < 0)
                     {
                         Helper.Log.Write(Helper.eLogType.Error,
-                            $"PixelSampling: MeasurePixel failed for point {pointIndex} with error {result}");
-                        captureFailed = true;
+                            $"PixelSampling: MeasurePixel failed for point {i} with error {res}");
+                        // Use black as fallback
                         color.R = 0;
                         color.G = 0;
                         color.B = 0;
@@ -649,107 +633,26 @@ namespace HyperTizen.Capture
                         if (invalidColorData)
                         {
                             Helper.Log.Write(Helper.eLogType.Warning,
-                                $"PixelSampling: Invalid color data at point {pointIndex}: " +
-                                $"R={color.R}, G={color.G}, B={color.B}");
-                            captureFailed = true;
+                                $"PixelSampling: Invalid color data at point {i}: R={color.R}, G={color.G}, B={color.B}");
+                            // Clamp to valid range
                             color.R = Math.Max(0, Math.Min(1023, color.R));
                             color.G = Math.Max(0, Math.Min(1023, color.G));
                             color.B = Math.Max(0, Math.Min(1023, color.B));
                         }
                     }
 
-                    colorData[pointIndex] = color;
+                    colorData[i] = color;
+                    i++;
                 }
             }
 
-            if (captureFailed)
-            {
-                Helper.Log.Write(Helper.eLogType.Warning,
-                    "PixelSampling: Capture discarded because at least one native sample failed");
-                return null;
-            }
-
-            LogColorDiagnostics(colorData);
             return colorData;
         }
 
-        private void LogColorDiagnostics(Color[] colors)
-        {
-            if (_colorDiagnosticsLogged || colors.Length == 0)
-            {
-                return;
-            }
-
-            int minRed = int.MaxValue;
-            int minGreen = int.MaxValue;
-            int minBlue = int.MaxValue;
-            int maxRed = 0;
-            int maxGreen = 0;
-            int maxBlue = 0;
-            int totalRed = 0;
-            int totalGreen = 0;
-            int totalBlue = 0;
-            var samples = new StringBuilder();
-
-            for (int colorIndex = 0; colorIndex < colors.Length; colorIndex++)
-            {
-                Color color = colors[colorIndex];
-                minRed = Math.Min(minRed, color.R);
-                minGreen = Math.Min(minGreen, color.G);
-                minBlue = Math.Min(minBlue, color.B);
-                maxRed = Math.Max(maxRed, color.R);
-                maxGreen = Math.Max(maxGreen, color.G);
-                maxBlue = Math.Max(maxBlue, color.B);
-                totalRed += color.R;
-                totalGreen += color.G;
-                totalBlue += color.B;
-
-                if (colorIndex > 0)
-                {
-                    samples.Append(';');
-                }
-
-                samples.Append(color.R)
-                    .Append('/')
-                    .Append(color.G)
-                    .Append('/')
-                    .Append(color.B);
-            }
-
-            Helper.Log.Write(Helper.eLogType.Info,
-                $"PixelSampling: Raw RGB diagnostics variant={_workingVariant}/{_workingLibPath}, " +
-                $"min={minRed}/{minGreen}/{minBlue}, max={maxRed}/{maxGreen}/{maxBlue}, " +
-                $"avg={totalRed / colors.Length}/{totalGreen / colors.Length}/{totalBlue / colors.Length}, " +
-                $"samples={samples}");
-            _colorDiagnosticsLogged = true;
-        }
-
-        private void BoostColors(Color[] colors)
-        {
-            for (int colorIndex = 0; colorIndex < colors.Length; colorIndex++)
-            {
-                int red = ScaleTo8Bit(colors[colorIndex].R);
-                int green = ScaleTo8Bit(colors[colorIndex].G);
-                int blue = ScaleTo8Bit(colors[colorIndex].B);
-                double luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
-
-                colors[colorIndex].R = ClampRgb(
-                    (luminance + (red - luminance) * OutputSaturationGain) * OutputBrightnessGain);
-                colors[colorIndex].G = ClampRgb(
-                    (luminance + (green - luminance) * OutputSaturationGain) * OutputBrightnessGain);
-                colors[colorIndex].B = ClampRgb(
-                    (luminance + (blue - luminance) * OutputSaturationGain) * OutputBrightnessGain);
-            }
-        }
-
-        private static int ClampRgb(double value)
-        {
-            return (int)Math.Max(0, Math.Min(255, Math.Round(value)));
-        }
-
         /// <summary>
-        /// Convert sampled pixel colors to the limited-range BT.601 NV12 format
+        /// Convert sampled pixel colors to NV12 format using BT.2020 color space
         /// Creates a virtual 64x48 image with sampled colors mapped to screen edges
+        /// Uses BT.2020 coefficients for HDR10+ compatibility
         /// </summary>
         private (byte[] yData, byte[] uvData) ConvertColorsToNV12(Color[] colors)
         {
@@ -760,29 +663,13 @@ namespace HyperTizen.Capture
             byte[] yData = new byte[width * height];
             byte[] uvData = new byte[width * height / 2]; // UV plane is half the size
 
-            // Fill unmeasured pixels with the average sampled color so the frame
-            // does not become black outside the narrow edge bands.
+            // Create virtual RGB image (same logic as original ToImage method)
             byte[] rgbImage = new byte[width * height * 3]; // RGB888
 
-            int averageRed = 0;
-            int averageGreen = 0;
-            int averageBlue = 0;
-            for (int colorIndex = 0; colorIndex < colors.Length; colorIndex++)
+            // Initialize with black
+            for (int i = 0; i < rgbImage.Length; i++)
             {
-                averageRed += colors[colorIndex].R;
-                averageGreen += colors[colorIndex].G;
-                averageBlue += colors[colorIndex].B;
-            }
-
-            byte fillRed = colors.Length == 0 ? (byte)0 : ScaleTo8Bit(averageRed / colors.Length);
-            byte fillGreen = colors.Length == 0 ? (byte)0 : ScaleTo8Bit(averageGreen / colors.Length);
-            byte fillBlue = colors.Length == 0 ? (byte)0 : ScaleTo8Bit(averageBlue / colors.Length);
-            for (int pixelIndex = 0; pixelIndex < width * height; pixelIndex++)
-            {
-                int rgbIndex = pixelIndex * 3;
-                rgbImage[rgbIndex + 0] = fillRed;
-                rgbImage[rgbIndex + 1] = fillGreen;
-                rgbImage[rgbIndex + 2] = fillBlue;
+                rgbImage[i] = 0;
             }
 
             // 16-point color mapping (4 points per edge)
@@ -939,7 +826,7 @@ namespace HyperTizen.Capture
                 }
             }
 
-            // Hyperion decodes NV12 with the BT.601 limited-range formula.
+            // Convert RGB to NV12 using BT.2020 color space (HDR10+ compatible)
             // Y plane
             for (int y = 0; y < height; y++)
             {
@@ -950,8 +837,8 @@ namespace HyperTizen.Capture
                     byte g = rgbImage[rgbIdx + 1];
                     byte b = rgbImage[rgbIdx + 2];
 
-                    // Y = 16 + (66R + 129G + 25B) / 256
-                    int yVal = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                    // BT.2020 Y = 0.2627R + 0.678G + 0.0593B
+                    int yVal = (int)(0.2627 * r + 0.678 * g + 0.0593 * b);
                     yData[y * width + x] = (byte)Math.Max(0, Math.Min(255, yVal));
                 }
             }
@@ -961,28 +848,16 @@ namespace HyperTizen.Capture
             {
                 for (int x = 0; x < width; x += 2)
                 {
-                    int redTotal = 0;
-                    int greenTotal = 0;
-                    int blueTotal = 0;
-                    for (int sampleY = 0; sampleY < 2; sampleY++)
-                    {
-                        for (int sampleX = 0; sampleX < 2; sampleX++)
-                        {
-                            int rgbIndex = ((y + sampleY) * width + x + sampleX) * 3;
-                            redTotal += rgbImage[rgbIndex + 0];
-                            greenTotal += rgbImage[rgbIndex + 1];
-                            blueTotal += rgbImage[rgbIndex + 2];
-                        }
-                    }
+                    // Sample 2x2 block
+                    int rgbIdx = (y * width + x) * 3;
+                    byte r = rgbImage[rgbIdx + 0];
+                    byte g = rgbImage[rgbIdx + 1];
+                    byte b = rgbImage[rgbIdx + 2];
 
-                    int r = (redTotal + 2) / 4;
-                    int g = (greenTotal + 2) / 4;
-                    int b = (blueTotal + 2) / 4;
-
-                    // U = 128 + (-38R - 74G + 112B) / 256
-                    // V = 128 + (112R - 94G - 18B) / 256
-                    int uVal = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                    int vVal = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+                    // BT.2020 U = -0.1396R - 0.36037G + 0.5B + 128
+                    // BT.2020 V = 0.5R - 0.4598G - 0.0402B + 128
+                    int uVal = (int)(-0.1396 * r - 0.36037 * g + 0.5 * b + 128);
+                    int vVal = (int)(0.5 * r - 0.4598 * g - 0.0402 * b + 128);
 
                     int uvIdx = (y / 2) * width + x;
                     uvData[uvIdx + 0] = (byte)Math.Max(0, Math.Min(255, uVal)); // U
@@ -994,12 +869,13 @@ namespace HyperTizen.Capture
         }
 
         /// <summary>
-        /// Normalize a VideoEnhance color component for RGB888 conversion.
-        /// VideoEnhance returns 8-bit component values.
+        /// Convert 10-bit color value (0-1023) to 8-bit (0-255) using proper scaling
+        /// Uses scaling rather than clamping to preserve color accuracy
         /// </summary>
         private byte ScaleTo8Bit(int value)
         {
-            return (byte)Math.Max(0, Math.Min(255, value));
+            // Scale 10-bit (0-1023) to 8-bit (0-255)
+            return (byte)Math.Min(255, value * 255 / 1023);
         }
 
         /// <summary>
@@ -1031,8 +907,6 @@ namespace HyperTizen.Capture
                     return CaptureResult.CreateFailure("PixelSampling: No colors captured");
                 }
 
-                BoostColors(colors);
-
                 // Convert to NV12 format
                 var (yData, uvData) = ConvertColorsToNV12(colors);
 
@@ -1051,7 +925,6 @@ namespace HyperTizen.Capture
         public void Cleanup()
         {
             _isInitialized = false;
-            _colorDiagnosticsLogged = false;
             Helper.Log.Write(Helper.eLogType.Debug, "PixelSampling: Cleaned up");
         }
     }

@@ -486,7 +486,7 @@ namespace HyperTizen
                                 // STEP 9: Initiate FlatBuffers connection (send frame)
                                 try
                                 {
-                                    await Networking.SendImageAsync(
+                                    _ = Networking.SendImageAsync(
                                         captureResult.YData,
                                         captureResult.UVData,
                                         captureResult.Width,

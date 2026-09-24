@@ -282,38 +282,6 @@
             max-height: 200px;
         }
 
-        .manual-server-entry {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 12px;
-        }
-
-        .manual-server-entry label {
-            color: #b0b0c0;
-            font-size: 12px;
-        }
-
-        .manual-server-entry input {
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid #4a4a6e;
-            border-radius: 6px;
-            background: #1e1e2e;
-            color: #e0e0e0;
-            font-size: 13px;
-        }
-
-        .manual-server-entry input:focus {
-            outline: none;
-            border-color: #5e8cc7;
-        }
-
-        .manual-server-entry small {
-            color: #888899;
-            line-height: 1.4;
-        }
-
         .device-item {
             background: #1e1e2e;
             padding: 12px;
@@ -564,19 +532,13 @@
             </div>
 
             <div class="control-section">
-                <h3>Discovered Servers (<span id="deviceCount">0</span>)</h3>
+                <h3>SSDP Devices (<span id="deviceCount">0</span>)</h3>
                 <div class="device-list" id="deviceList">
                     <div class="no-devices">Click "Rescan" to find devices</div>
                 </div>
                 <div class="control-buttons">
                     <button class="btn-rescan" onclick="rescanDevices()">🔍 Rescan</button>
                     <button class="btn-apply" onclick="applyDevices()">✓ Apply</button>
-                </div>
-                <div class="manual-server-entry">
-                    <label for="manualServerUrl">Manual HyperHDR server URL</label>
-                    <input id="manualServerUrl" type="text" placeholder="http://192.168.178.23:8090" onkeydown="if (event.key === 'Enter') applyManualServer()">
-                    <button class="btn-secondary" onclick="applyManualServer()">Use &amp; Restart</button>
-                    <small>For servers missing from SSDP or advertising a container-only address. Capture uses TCP port 19400 by default, not the web UI port.</small>
                 </div>
             </div>
         </div>
@@ -694,7 +656,6 @@
 
                     // Request initial status
                     send({ Event: Events.GetStatus });
-                    send({ Event: Events.ReadConfig, key: 'rpcServer' });
                     send({ Event: Events.ScanSSDP });
                 };
 
@@ -807,14 +768,6 @@
                     break;
                 case Events.ReadConfigResult:
                     addLog('Info', `Config: ${data.key} = ${data.value}`);
-                    if (data.key === 'rpcServer' && !data.error) {
-                        const manualServerInput = document.getElementById('manualServerUrl');
-                        if (manualServerInput && typeof data.value === 'string') {
-                            manualServerInput.value = data.value
-                                .replace(/^wss:/i, 'https:')
-                                .replace(/^ws:/i, 'http:');
-                        }
-                    }
                     break;
                 default:
                     console.log('Unknown event:', data);
@@ -854,14 +807,14 @@
                 return;
             }
 
-            addLog('Info', `Found ${data.devices.length} server(s)`);
+            addLog('Info', `Found ${data.devices.length} SSDP device(s)`);
             ssdpDevices = data.devices;
 
             const deviceList = document.getElementById('deviceList');
             deviceList.innerHTML = '';
 
             if (data.devices.length === 0) {
-                deviceList.innerHTML = '<div class="no-devices">No servers found. Check network discovery or enter a server URL below.</div>';
+                deviceList.innerHTML = '<div class="no-devices">No devices found</div>';
                 document.getElementById('deviceCount').textContent = '0';
                 return;
             }
@@ -941,7 +894,7 @@
         }
 
         function rescanDevices() {
-            addLog('Info', 'Rescanning for Hyperion/HyperHDR servers...');
+            addLog('Info', 'Rescanning SSDP devices...');
             send({ Event: Events.ScanSSDP });
         }
 
@@ -954,35 +907,6 @@
             const url = Array.from(selectedDevices)[0];
             addLog('Info', `Applying device: ${url}`);
             send({ Event: Events.SetConfig, key: 'rpcServer', value: url });
-            restartService();
-        }
-
-        function applyManualServer() {
-            const input = document.getElementById('manualServerUrl');
-            const rawUrl = input ? input.value.trim() : '';
-            if (!rawUrl) {
-                addLog('Warning', 'Enter the HyperHDR web URL, for example http://192.168.178.23:8090');
-                return;
-            }
-
-            try {
-                const urlWithScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
-                const parsedUrl = new URL(urlWithScheme);
-                if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsedUrl.protocol) || !parsedUrl.hostname) {
-                    throw new Error('Use an HTTP(S) or WS(S) server URL');
-                }
-
-                const scheme = parsedUrl.protocol === 'https:' || parsedUrl.protocol === 'wss:' ? 'wss:' : 'ws:';
-                const rpcServer = `${scheme}//${parsedUrl.host}`;
-                selectedDevices.clear();
-                selectedDevices.add(rpcServer);
-
-                addLog('Info', `Applying manual HyperHDR server: ${rpcServer}`);
-                send({ Event: Events.SetConfig, key: 'rpcServer', value: rpcServer });
-                restartService();
-            } catch (err) {
-                addLog('Error', `Invalid HyperHDR URL: ${err.message}`);
-            }
         }
 
         // ============================================================================

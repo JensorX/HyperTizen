@@ -23,13 +23,16 @@ This is an **experimental fork** of [HyperTizen](https://github.com/reisxd/Hyper
 
 This fork is focused on implementing screen capture functionality for **Tizen 8.0+ TVs**.
 
-**T9 Full-Frame Capture:** The selector now tries `T9VideoCaptureMethod` and `T9DisplayCaptureMethod` before the pixel-sampling fallback. The user reports that the build from `Downloads/HyperTizen-main` produced a complete colored border; the current package still needs to confirm which method passes its hardware test.
+**✅ Pixel Sampling Capture Method**: Now **IMPLEMENTED** using `libvideoenhance.so`
+- Samples 16 pixels from screen edges for ambient lighting
+- Converts 10-bit RGB to NV12 format for FlatBuffers transmission
+- Supports both Tizen 6 and Tizen 7+ API variants
+- Requires hardware testing to verify color accuracy and coordinate mapping
+- Pretty bad performance, but it works! Sorta. Basically takes the dominant color on the screen. And flickering.
 
-**Pixel Sampling Capture Method:** `libvideoenhance.so` samples 16 edge points and constructs a synthetic 64×48 NV12 frame. It is a fallback, not a full-screen capture method. Check `CAPTURE METHOD SELECTED` in the TV log to verify whether the current package selected this fallback or a T9 capture method.
+**⚠️ Other Capture Methods**: T8SDK and T7SDK remain as scaffolding (not yet implemented)
 
-**⚠️ Other Capture Methods:** T8SDK and T7SDK remain scaffolding (not implemented).
-
-**Capture Architecture:** `CaptureMethodSelector` tests in priority order (T9Video → T9Display → T8SDK → T7SDK → PixelSampling) and selects the first method whose availability and capture test pass.
+**Capture Architecture:** HyperTizen uses a systematic `ICaptureMethod` interface with automatic fallback. The `CaptureMethodSelector` tests available methods on startup (T8SDK → T7SDK → PixelSampling) and selects the first working method.
 
 ---
 
@@ -91,14 +94,9 @@ The control panel (`controls.html`) provides the same functionality as the Hyper
 - 🌈 Rainbow border indicator when capturing
 
 **SSDP Device Management:**
-- 🔍 Scan for Hyperion/HyperHDR devices on your network, with an HTTP-description fallback for the configured HyperHDR URL
+- 🔍 Scan for Hyperion/HyperHDR devices on your network
 - ✓ Select and apply devices
 - View device details (name, URL)
-- Manually enter a HyperHDR web URL when SSDP is unavailable (common with bridged/container installs)
-
-For example, enter `http://192.168.178.23:8090` and choose **Use & Restart**. Port **8090** is the web UI; capture uses HyperHDR's FlatBuffers TCP port, **19400** by default. That TCP port must also be reachable from the TV.
-
-The service also probes `http://192.168.178.23:8090/description.xml` during each device scan. If it identifies HyperHDR, it is added to the discovered-server list as an HTTP fallback. Applying any listed server saves it and restarts the capture service.
 
 **Live Monitoring:**
 - 📊 Real-time service status (state, FPS, frames captured, errors)
@@ -149,7 +147,6 @@ The control panel is perfect for:
 
 ### Partially Implemented
 
-- **T9 Video/Display Capture Methods**: Native full-frame paths are present and now tested first; ABI, plane layout, and hardware behavior still require confirmation on the current package.
 - **T8SDK Capture Method**: Scaffolding exists, core implementation not yet added
 - **T7SDK Capture Method**: Scaffolding exists, core implementation not yet added
 
@@ -158,7 +155,6 @@ The control panel is perfect for:
 **Pixel Sampling Method:**
 - ⚠️ **Color accuracy**: Basically takes the dominant color on the screen
 - **Flickering**: Random white flicker now and then
-- The latest user-reported image shows only a top strip; use the T9 full-frame methods when their native test passes.
 
 ### Testing the Pixel Sampling Implementation
 

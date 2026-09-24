@@ -1,6 +1,6 @@
 # HyperTizen Control Center UI
 
-**Version:** 1.2.0
+**Version:** 1.2.1
 
 A modern, TV-optimized control interface for HyperTizen screen capture on Samsung Tizen TVs. Features real-time monitoring, service control, SSDP device discovery, and live log streaming - all controllable via TV remote.
 
@@ -111,6 +111,8 @@ If you need to install manually or test development versions:
 
 If HyperHDR is reachable over HTTP but does not appear in SSDP (for example, when it runs in a bridged container), the scanner automatically probes the configured HTTP fallback and adds it to the list when its description identifies HyperHDR. Use **Manual HyperHDR server URL** for a different address or if that probe is unreachable. The HTTP port (often 8090) is only for the web UI; HyperTizen sends capture data to the FlatBuffers TCP port (19400 by default), which must also be reachable from the TV.
 
+Version 1.2.1 also adds the configured HyperHDR fallback in the TV UI itself if the service response does not include it. After deploying the updated UI module, update/reinstall it through TizenBrew so the TV does not keep running its cached copy.
+
 The service probes `http://192.168.178.23:8090/description.xml` during each scan and automatically lists it when its UPnP description identifies HyperHDR. Applying a discovered server saves the selection and restarts the service. If the HyperHDR address changes, update the fallback URL in [HyperTizen/WebSocket/WebSocket.cs](HyperTizen/WebSocket/WebSocket.cs).
 
 ### Rainbow Border Indicator
@@ -201,7 +203,11 @@ If you need to change the WebSocket ports, edit:
 
 ## Version History
 
-### v1.2.0 (Current)
+### v1.2.1 (Current)
+- Always show the configured HyperHDR HTTP fallback when the service scan omits it
+- Bump the TizenBrew module version so installations can receive the updated UI
+
+### v1.2.0
 - Added animated rainbow gradient ring indicator (5% width)
 - Improved remote control navigation
 - Enhanced focus indicators

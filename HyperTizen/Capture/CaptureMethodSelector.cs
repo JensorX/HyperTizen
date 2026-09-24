@@ -8,7 +8,7 @@ namespace HyperTizen.Capture
 {
     /// <summary>
     /// Systematically tests all available capture methods and selects the best one
-    /// Tests in priority order: T8SDK (fastest) → T7SDK (fast) → PixelSampling (slowest)
+    /// Tests in priority order: T9 video → T9 display → T8 SDK → T7 SDK → Pixel Sampling
     /// Thread-safe selection process with automatic cleanup of unused methods
     /// </summary>
     public class CaptureMethodSelector
@@ -25,11 +25,11 @@ namespace HyperTizen.Capture
         public CaptureMethodSelector()
         {
             Helper.Log.Write(Helper.eLogType.Info, "CaptureMethodSelector: Initializing all capture methods");
-            Helper.Log.Write(Helper.eLogType.Warning,
-                "CaptureMethodSelector: T9 native methods remain disabled until their ABI and YUV range are validated");
 
             _methods = new List<ICaptureMethod>
             {
+                new T9VideoCaptureMethod(),      // Priority 5 (highest - Tizen 9 primary)
+                new T9DisplayCaptureMethod(),    // Priority 4 (Tizen 9 alternative)
                 new T8SdkCaptureMethod(),        // Priority 3 (medium - Tizen 8)
                 new T7SdkCaptureMethod(),        // Priority 2 (low - Tizen 7 and below)
                 new PixelSamplingCaptureMethod() // Priority 1 (lowest - fallback, works on all)
@@ -57,7 +57,8 @@ namespace HyperTizen.Capture
 
             Helper.Log.Write(Helper.eLogType.Info, "CaptureMethodSelector: Starting capture method selection");
             Helper.Log.Write(Helper.eLogType.Info, $"Current Tizen version: {SDK.SystemInfo.TizenVersionMajor}.{SDK.SystemInfo.TizenVersionMinor}");
-            Helper.Log.Write(Helper.eLogType.Info, "Testing methods in priority order (T8SDK → T7SDK → PixelSampling)");
+            Helper.Log.Write(Helper.eLogType.Info,
+                "Testing methods in priority order (T9Video → T9Display → T8SDK → T7SDK → PixelSampling)");
 
             // Sort methods by priority (highest to lowest)
             var sortedMethods = _methods.OrderByDescending(m => m.Type).ToList();

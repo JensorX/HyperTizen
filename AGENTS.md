@@ -60,25 +60,39 @@ Startup Flow:
 3. Failed methods are automatically cleaned up
 4. Single active capture method used for entire session
 
-Three Capture Methods (Priority Order):
-1. T8SdkCaptureMethod
+Five Capture Methods (Priority Order):
+1. T9VideoCaptureMethod
+   ├─ libvideo-capture.so variants
+   ├─ Tests available C entry points and NV12 output
+   ├─ Experimental native ABI; select only after its capture test passes
+   └─ See: HyperTizen/Capture/T9VideoCaptureMethod.cs
+
+2. T9DisplayCaptureMethod
+   ├─ libdisplay-capture-api.so variants
+   ├─ Alternative Tizen 9 full-frame capture path
+   ├─ Experimental; select only after its capture test passes
+   └─ See: HyperTizen/Capture/T9DisplayCaptureMethod.cs
+
+3. T8SdkCaptureMethod
    ├─ libvideo-capture.so.0.1.0
    ├─ Vtable implementation (Lock → getVideoMainYUV → Unlock)
    ├─ May not be available on all firmware versions
    └─ See: HyperTizen/Capture/T8SdkCaptureMethod.cs
 
-2. T7SdkCaptureMethod
+4. T7SdkCaptureMethod
    ├─ libsec-video-capture.so.0
    ├─ Legacy API from Tizen 7.0 and earlier
    ├─ May not exist on Tizen 8.0+ firmware
    └─ See: HyperTizen/Capture/T7SdkCaptureMethod.cs
 
-3. PixelSamplingCaptureMethod
+5. PixelSamplingCaptureMethod
    ├─ libvideoenhance.so
    ├─ VideoEnhance_SamplePixel() - samples individual RGB pixels
-   ├─ Slower than frame capture, may have different availability
+   ├─ Synthetic edge-sampling fallback, not full-frame capture
    └─ See: HyperTizen/Capture/PixelSamplingCaptureMethod.cs
 ```
+
+**Hardware observation:** The user reports that the build under `Downloads/HyperTizen-main` produced a complete colored border, while the current build shows only a top strip. That older selector tried the two T9 full-frame methods first; keep them enabled and use the startup log (`CAPTURE METHOD SELECTED`) to confirm which one passes on hardware.
 
 **10-Step Service Startup:**
 1. Service startup (initialize lifecycle management)
@@ -98,6 +112,8 @@ Three Capture Methods (Priority Order):
 - **`HyperTizen/Capture/ICaptureMethod.cs`** - Interface for all capture methods
 - **`HyperTizen/Capture/CaptureMethodSelector.cs`** - Tests and selects best method
 - **`HyperTizen/Capture/CaptureResult.cs`** - Standardized capture result wrapper
+- **`HyperTizen/Capture/T9VideoCaptureMethod.cs`** - Experimental Tizen 9 video capture
+- **`HyperTizen/Capture/T9DisplayCaptureMethod.cs`** - Experimental Tizen 9 display capture
 - **`HyperTizen/Capture/T8SdkCaptureMethod.cs`** - T8 API (implementation complete)
 - **`HyperTizen/Capture/T7SdkCaptureMethod.cs`** - T7 legacy API (missing on T8+)
 - **`HyperTizen/Capture/PixelSamplingCaptureMethod.cs`** - Pixel sampling approach

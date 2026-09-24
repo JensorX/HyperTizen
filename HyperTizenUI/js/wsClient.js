@@ -28,6 +28,13 @@ const Events = {
     RestartService: 12
 };
 
+// Keep the known HyperHDR endpoint visible even when the service's SSDP result
+// comes from an older build that does not yet add its HTTP-description fallback.
+const hyperHdrFallback = {
+    FriendlyName: 'HyperHDR (192.168.178.23) [HTTP fallback]',
+    UrlBase: 'http://192.168.178.23:8090'
+};
+
 // Initialize the application
 window.initializeApp = function(ip) {
     deviceIP = ip;
@@ -214,21 +221,30 @@ function handleSSDPResult(data) {
         return;
     }
 
-    addLog('Info', `Found ${data.devices.length} server(s)`);
+    const devices = data.devices.slice();
+    const fallbackHost = new URL(hyperHdrFallback.UrlBase).host.toLowerCase();
+    const fallbackListed = devices.some(device => {
+        try {
+            return new URL(device.UrlBase).host.toLowerCase() === fallbackHost;
+        } catch (err) {
+            return false;
+        }
+    });
+
+    if (!fallbackListed) {
+        devices.push(hyperHdrFallback);
+        addLog('Info', 'Added configured HyperHDR HTTP fallback to the server list');
+    }
+
+    addLog('Info', `Found ${devices.length} server(s)`);
 
     // Clear existing devices
     ssdpDevices = [];
     const deviceList = document.getElementById('deviceList');
     deviceList.innerHTML = '';
 
-    if (data.devices.length === 0) {
-        deviceList.innerHTML = '<div class="no-devices">No servers found. Check network discovery or enter a server URL below.</div>';
-        document.getElementById('ssdpCount').textContent = '0';
-        return;
-    }
-
     // Add new devices
-    data.devices.forEach((device, index) => {
+    devices.forEach((device, index) => {
         const url = device.UrlBase.indexOf('https') === 0
             ? device.UrlBase.replace('https', 'wss')
             : device.UrlBase.replace('http', 'ws');

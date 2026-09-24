@@ -199,6 +199,12 @@ function handleConfigResult(data) {
     } else if (data.key === 'rpcServer') {
         addLog('Info', `Current RPC server: ${data.value}`);
         updateStatus('serviceStatus', 'Running');
+        const manualServerInput = document.getElementById('manualServerUrl');
+        if (manualServerInput && typeof data.value === 'string') {
+            manualServerInput.value = data.value
+                .replace(/^wss:/i, 'https:')
+                .replace(/^ws:/i, 'http:');
+        }
     }
 }
 
@@ -208,7 +214,7 @@ function handleSSDPResult(data) {
         return;
     }
 
-    addLog('Info', `Found ${data.devices.length} SSDP device(s)`);
+    addLog('Info', `Found ${data.devices.length} server(s)`);
 
     // Clear existing devices
     ssdpDevices = [];
@@ -216,7 +222,7 @@ function handleSSDPResult(data) {
     deviceList.innerHTML = '';
 
     if (data.devices.length === 0) {
-        deviceList.innerHTML = '<div class="no-devices">No devices found. Click Rescan to try again.</div>';
+        deviceList.innerHTML = '<div class="no-devices">No servers found. Check network discovery or enter a server URL below.</div>';
         document.getElementById('ssdpCount').textContent = '0';
         return;
     }
@@ -369,10 +375,39 @@ function applyDeviceSelection() {
 
     addLog('Info', `Applying device selection: ${firstDevice}`);
     send({ Event: Events.SetConfig, key: 'rpcServer', value: firstDevice });
+    restartService();
 
     // If there are multiple devices selected, log a note
     if (selectedDevices.size > 1) {
         addLog('Warning', `Multiple devices selected (${selectedDevices.size}), but only the first one will be used. Multi-device support is coming soon!`);
+    }
+}
+
+function applyManualServer() {
+    const input = document.getElementById('manualServerUrl');
+    const rawUrl = input ? input.value.trim() : '';
+    if (!rawUrl) {
+        addLog('Warning', 'Enter the HyperHDR web URL, for example http://192.168.178.23:8090');
+        return;
+    }
+
+    try {
+        const urlWithScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
+        const parsedUrl = new URL(urlWithScheme);
+        if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsedUrl.protocol) || !parsedUrl.hostname) {
+            throw new Error('Use an HTTP(S) or WS(S) server URL');
+        }
+
+        const scheme = parsedUrl.protocol === 'https:' || parsedUrl.protocol === 'wss:' ? 'wss:' : 'ws:';
+        const rpcServer = `${scheme}//${parsedUrl.host}`;
+        selectedDevices.clear();
+        selectedDevices.add(rpcServer);
+
+        addLog('Info', `Applying manual HyperHDR server: ${rpcServer}`);
+        send({ Event: Events.SetConfig, key: 'rpcServer', value: rpcServer });
+        restartService();
+    } catch (err) {
+        addLog('Error', `Invalid HyperHDR URL: ${err.message}`);
     }
 }
 
@@ -409,7 +444,7 @@ function restartService() {
 }
 
 function rescanDevices() {
-    addLog('Info', 'Rescanning for SSDP devices...');
+    addLog('Info', 'Rescanning for Hyperion/HyperHDR servers...');
     send({ Event: Events.ScanSSDP });
 }
 
@@ -592,6 +627,7 @@ function setupButtonHandlers() {
     document.getElementById('btnRestart').onclick = restartService;
     document.getElementById('btnRescan').onclick = rescanDevices;
     document.getElementById('btnApplyDevices').onclick = applyDeviceSelection;
+    document.getElementById('btnManualServer').onclick = applyManualServer;
     document.getElementById('btnClearLogs').onclick = clearLogs;
 }
 

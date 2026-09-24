@@ -28,10 +28,12 @@ A modern, TV-optimized control interface for HyperTizen screen capture on Samsun
 - Connection status tracking
 
 ### 🔍 SSDP Device Discovery
-- Automatic discovery of Hyperion/HyperHDR servers on network
+- Automatic discovery of Hyperion/HyperHDR servers via SSDP
+- HTTP-description fallback for HyperHDR at `http://192.168.178.23:8090` when SSDP multicast is unavailable
 - Easy device selection via remote
 - Apply selected server with one button press
 - Live device count display
+- Manual HyperHDR URL entry when SSDP is blocked or the server advertises a container-only IP
 
 ### 📜 Live Log Streaming
 - Real-time log viewing from HyperTizen service
@@ -106,6 +108,10 @@ If you need to install manually or test development versions:
 2. Devices will appear in the list below
 3. Click a device to select it (highlighted in blue)
 4. Click **Apply Selection** to save and use the selected server
+
+If HyperHDR is reachable over HTTP but does not appear in SSDP (for example, when it runs in a bridged container), the scanner automatically probes the configured HTTP fallback and adds it to the list when its description identifies HyperHDR. Use **Manual HyperHDR server URL** for a different address or if that probe is unreachable. The HTTP port (often 8090) is only for the web UI; HyperTizen sends capture data to the FlatBuffers TCP port (19400 by default), which must also be reachable from the TV.
+
+The service probes `http://192.168.178.23:8090/description.xml` during each scan and automatically lists it when its UPnP description identifies HyperHDR. Applying a discovered server saves the selection and restarts the service. If the HyperHDR address changes, update the fallback URL in [HyperTizen/WebSocket/WebSocket.cs](HyperTizen/WebSocket/WebSocket.cs).
 
 ### Rainbow Border Indicator
 

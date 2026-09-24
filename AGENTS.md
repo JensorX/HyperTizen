@@ -646,6 +646,10 @@ curl http://<TV_IP>:45678
 # Should return logs.html content
 ```
 
+### HyperHDR Missing from SSDP
+
+HyperHDR may be reachable over HTTP while SSDP discovery fails, especially in a bridged/container network. Its UPnP description can advertise an internal-only address, and UDP multicast on port 1900 may not be forwarded. The control service supplements SSDP with an HTTP description probe for `http://192.168.178.23:8090/description.xml`; a matching HyperHDR description is added to the discovered-server list. If the address changes, update the fallback URL in [HyperTizen/WebSocket/WebSocket.cs](HyperTizen/WebSocket/WebSocket.cs). The web UI port (often 8090) is not the capture port; HyperTizen connects to the FlatBuffers TCP port (19400 by default), which must also be exposed and reachable from the TV.
+
 ### Pixel Sampling Performance
 
 **Observation:** Pixel sampling methods may be slower than frame capture approaches

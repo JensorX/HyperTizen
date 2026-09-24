@@ -27,7 +27,7 @@
         <!-- Main Content -->
         <div class="main-content">
 
-            <!-- Left Column: Service Control & SSDP Devices -->
+            <!-- Left Column: Service Control & Discovered Servers -->
             <div class="left-column">
 
                 <!-- Service Control Section -->
@@ -78,9 +78,9 @@
                     </div>
                 </div>
 
-                <!-- SSDP Devices Section -->
+                <!-- Discovered Servers Section -->
                 <div class="section ssdp-devices">
-                    <h2>SSDP Devices</h2>
+                    <h2>Discovered Servers</h2>
                     <div class="ssdp-info">
                         <span id="ssdpCount">0</span> device(s) found
                     </div>
@@ -97,6 +97,14 @@
                             ✓ Apply Selection
                         </button>
                     </div>
+                    <div class="manual-server-entry">
+                        <label for="manualServerUrl">Manual HyperHDR server URL</label>
+                        <div class="manual-server-row">
+                            <input id="manualServerUrl" type="text" placeholder="http://192.168.178.23:8090" tabindex="8">
+                            <button class="btn btn-small btn-primary" id="btnManualServer" tabindex="9">Use &amp; Restart</button>
+                        </div>
+                        <p>Useful when SSDP is blocked or HyperHDR advertises a container-only IP. Capture uses TCP port 19400 by default, not the web UI port.</p>
+                    </div>
                 </div>
             </div>
 
@@ -110,7 +118,7 @@
                                 <input type="checkbox" id="autoScroll" checked>
                                 <span>Auto-scroll</span>
                             </label>
-                            <button class="btn btn-small" id="btnClearLogs" tabindex="8">
+                            <button class="btn btn-small" id="btnClearLogs" tabindex="10">
                                 🗑 Clear
                             </button>
                         </div>
@@ -192,7 +200,7 @@
             function updateFocusableElements() {
                 // Get all focusable elements in document order
                 focusableElements = Array.from(
-                    document.querySelectorAll('button:not([disabled]), input[type="checkbox"], .device-item')
+                    document.querySelectorAll('button:not([disabled]), input[type="checkbox"], input[type="text"], .device-item')
                 );
 
                 // If current element is no longer focusable, reset index

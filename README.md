@@ -94,9 +94,14 @@ The control panel (`controls.html`) provides the same functionality as the Hyper
 - 🌈 Rainbow border indicator when capturing
 
 **SSDP Device Management:**
-- 🔍 Scan for Hyperion/HyperHDR devices on your network
+- 🔍 Scan for Hyperion/HyperHDR devices on your network, with an HTTP-description fallback for the configured HyperHDR URL
 - ✓ Select and apply devices
 - View device details (name, URL)
+- Manually enter a HyperHDR web URL when SSDP is unavailable (common with bridged/container installs)
+
+For example, enter `http://192.168.178.23:8090` and choose **Use & Restart**. Port **8090** is the web UI; capture uses HyperHDR's FlatBuffers TCP port, **19400** by default. That TCP port must also be reachable from the TV.
+
+The service also probes `http://192.168.178.23:8090/description.xml` during each device scan. If it identifies HyperHDR, it is added to the discovered-server list as an HTTP fallback. Applying any listed server saves it and restarts the capture service.
 
 **Live Monitoring:**
 - 📊 Real-time service status (state, FPS, frames captured, errors)

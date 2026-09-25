@@ -7,8 +7,9 @@ agents:
     description: >
       Specialized expert in Tizen screen capture APIs, native library internals,
       and Samsung TV platform-specific capture methods. Deep knowledge of all
-      capture approaches: VideoEnhance pixel sampling (WORKING), VTable-based
-      capture (T8 API), and legacy T7 API.
+      capture approaches: T9 video/display probes, VideoEnhance pixel sampling,
+      VTable-based capture (T8 API), and legacy T7 API. The supplied S90C log
+      selects VideoEnhance with two slots; the latest sampling fix needs TV validation.
 
     expertise:
       - Tizen 7.0/8.0+ screen capture API differences
@@ -46,9 +47,12 @@ agents:
 
     context: >
       HyperTizen uses a systematic fallback capture architecture with the
-      ICaptureMethod interface. Three capture methods are available (T8SDK,
-      T7SDK, PixelSampling) with different priorities. Implementation details
-      need to be added based on TV hardware capabilities and available libraries.
+      ICaptureMethod interface. The selector order is T9Video, T9Display, T8SDK,
+      T7SDK, then PixelSampling. On the supplied S90C/Tizen 9 log, T9Video tests
+      returned -1, T9Display returned -2, and PixelSampling using ppi_ve_* was
+      selected with ScreenCapturePoints=2 and SleepMS=20. Four edge anchors
+      require two set-wait-read batches (about 25 FPS maximum before overhead).
+      The updated batch/color-filter code must still be verified on that TV.
 
   - name: debugging-assistant
     description: >
@@ -248,9 +252,12 @@ project:
   language: C#
   platform: .NET on Samsung Tizen TV
   current_status: >
-    VideoEnhance pixel sampling is the ONLY working capture method on Tizen 8.0+.
-    The T8 vtable API is blocked by Samsung firmware (-95 error). The T7 API
-    doesn't exist on Tizen 8. WebSocket logging and diagnostic mode are working.
+    On the tested Samsung S90C running Tizen 9, T9Video capture tests return -1,
+    T9Display returns -2, and PixelSampling (ppi_ve_*) is selected with two
+    measurement slots and a 20ms wait. A code fix now samples four edge anchors
+    in correctly sequenced batches and filters transient spikes; the updated
+    build still needs real-TV validation. T8/T7 behavior varies by firmware.
+    WebSocket logging and diagnostic mode are working.
 
 # How to use this file
 usage: >

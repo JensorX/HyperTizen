@@ -11,9 +11,10 @@ This document provides essential guidance for Claude or other LLMs working with 
 HyperTizen is an experimental fork of a Hyperion/HyperHDR screen capturer for Samsung Tizen TVs, focused on **Tizen 8.0+ screen capture research**.
 
 **Current Status:**
-- **T8 SDK Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
-- **T7 SDK Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
-- **Pixel Sampling Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
+- **T9 Video Capture** = library symbols exist on the S90C, but capture tests returned `-1`
+- **T9 Display Capture** = capture test returned `-2` on the S90C
+- **T8/T7 SDK Capture Methods** = scaffolding exists; not selected on the tested device
+- **Pixel Sampling** = selected on the S90C/Tizen 9 via `ppi_ve_*`; code now uses four edge anchors and correctly reads each batch before reusing the two native slots. The updated build still requires hardware retesting.
 
 **Critical Constraint:** Always verify methods on actual TV hardware - emulator testing is not reliable. Different Tizen firmware versions may have different API availability.
 
@@ -60,23 +61,36 @@ Startup Flow:
 3. Failed methods are automatically cleaned up
 4. Single active capture method used for entire session
 
-Three Capture Methods (Priority Order):
-1. T8SdkCaptureMethod
+Five Capture Methods (Priority Order):
+1. T9VideoCaptureMethod
+   ├─ libvideo-capture.so.0.1.0
+   ├─ secvideo_api_* and ppi_video_capture_* entry points
+   ├─ Entry points were present but capture tests returned -1 on the tested S90C
+   └─ See: HyperTizen/Capture/T9VideoCaptureMethod.cs
+
+2. T9DisplayCaptureMethod
+   ├─ libdisplay-capture-api.so.0.0
+   ├─ dc_request_capture_sync API
+   ├─ Capture test returned -2 on the tested S90C
+   └─ See: HyperTizen/Capture/T9DisplayCaptureMethod.cs
+
+3. T8SdkCaptureMethod
    ├─ libvideo-capture.so.0.1.0
    ├─ Vtable implementation (Lock → getVideoMainYUV → Unlock)
    ├─ May not be available on all firmware versions
    └─ See: HyperTizen/Capture/T8SdkCaptureMethod.cs
 
-2. T7SdkCaptureMethod
+4. T7SdkCaptureMethod
    ├─ libsec-video-capture.so.0
    ├─ Legacy API from Tizen 7.0 and earlier
    ├─ May not exist on Tizen 8.0+ firmware
    └─ See: HyperTizen/Capture/T7SdkCaptureMethod.cs
 
-3. PixelSamplingCaptureMethod
+5. PixelSamplingCaptureMethod
    ├─ libvideoenhance.so
-   ├─ VideoEnhance_SamplePixel() - samples individual RGB pixels
-   ├─ Slower than frame capture, may have different availability
+   ├─ `ppi_ve_*` API on the tested Tizen 9 S90C
+   ├─ Two slots, 20ms per batch; four edge anchors require two batches (~25 FPS max)
+   ├─ Hardware availability and returned colors vary by firmware/content
    └─ See: HyperTizen/Capture/PixelSamplingCaptureMethod.cs
 ```
 
@@ -98,9 +112,11 @@ Three Capture Methods (Priority Order):
 - **`HyperTizen/Capture/ICaptureMethod.cs`** - Interface for all capture methods
 - **`HyperTizen/Capture/CaptureMethodSelector.cs`** - Tests and selects best method
 - **`HyperTizen/Capture/CaptureResult.cs`** - Standardized capture result wrapper
-- **`HyperTizen/Capture/T8SdkCaptureMethod.cs`** - T8 API (implementation complete)
+- **`HyperTizen/Capture/T8SdkCaptureMethod.cs`** - T8 API candidate/scaffolding
 - **`HyperTizen/Capture/T7SdkCaptureMethod.cs`** - T7 legacy API (missing on T8+)
-- **`HyperTizen/Capture/PixelSamplingCaptureMethod.cs`** - Pixel sampling approach
+- **`HyperTizen/Capture/T9VideoCaptureMethod.cs`** - Tizen 9 video capture probe
+- **`HyperTizen/Capture/T9DisplayCaptureMethod.cs`** - Tizen 9 display capture probe
+- **`HyperTizen/Capture/PixelSamplingCaptureMethod.cs`** - VideoEnhance pixel sampling; four anchors with two-slot batching on the tested S90C
 
 **Core Services:**
 - **`HyperTizen/LogWebSocketServer.cs`** - WebSocket log streaming
@@ -706,7 +722,7 @@ curl http://<TV_IP>:45678
 /home/user/HyperTizen/.agents
 /home/user/HyperTizen/HyperTizen/Capture/ICaptureMethod.cs  (Capture interface)
 /home/user/HyperTizen/HyperTizen/Capture/CaptureMethodSelector.cs  (Selection logic)
-/home/user/HyperTizen/HyperTizen/Capture/PixelSamplingCaptureMethod.cs  (WORKING)
+/home/user/HyperTizen/HyperTizen/Capture/PixelSamplingCaptureMethod.cs  (implemented; S90C retest pending)
 /home/user/HyperTizen/HyperTizen/Capture/T8SdkCaptureMethod.cs  (T8 - BLOCKED)
 /home/user/HyperTizen/HyperTizen/HyperionClient.cs  (10-step startup flow)
 /home/user/HyperTizen/logs.html  (WebSocket viewer)

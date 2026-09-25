@@ -1,19 +1,18 @@
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
+using System.IO;
 using System.Net.Sockets;
-using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Google.FlatBuffers;
 using hyperhdrnet;
-using Tizen.Messaging.Messages;
 
 namespace HyperTizen
 {
     public static class Networking
     {
+        private const int MaxReplySize = 1024 * 1024;
         private static readonly object _lock = new object();
+        private static readonly SemaphoreSlim _imageSendLock = new SemaphoreSlim(1, 1);
         private static TcpClient _client;
         private static NetworkStream _stream;
 
@@ -35,30 +34,24 @@ namespace HyperTizen
             {
                 try
                 {
-                    if (_stream != null)
-                    {
-                        _stream.Flush();
-                        _stream.Close(500);
-                    }
+                    _stream?.Close();
                 }
                 catch (Exception ex)
                 {
-                    Helper.Log.Write(Helper.eLogType.Warning, $"DisconnectClient: Stream close error: {ex.Message}");
+                    Helper.Log.Write(Helper.eLogType.Warning,
+                        $"DisconnectClient: Stream close error: {ex.Message}");
                 }
 
                 try
                 {
-                    if (_client != null)
-                    {
-                        _client.Close();
-                    }
+                    _client?.Close();
                 }
                 catch (Exception ex)
                 {
-                    Helper.Log.Write(Helper.eLogType.Warning, $"DisconnectClient: Client close error: {ex.Message}");
+                    Helper.Log.Write(Helper.eLogType.Warning,
+                        $"DisconnectClient: Client close error: {ex.Message}");
                 }
 
-                // CRITICAL FIX: Null out references to prevent race conditions
                 _stream = null;
                 _client = null;
                 Helper.Log.Write(Helper.eLogType.Info, "DisconnectClient: Client and stream nulled");
@@ -69,10 +62,9 @@ namespace HyperTizen
         {
             try
             {
-                // Validate before connecting
                 if (string.IsNullOrEmpty(Globals.Instance.ServerIp) || Globals.Instance.ServerPort <= 0)
                 {
-                    Helper.Log.Write(Helper.eLogType.Error, 
+                    Helper.Log.Write(Helper.eLogType.Error,
                         $"TCP FAILED: Bad config {Globals.Instance.ServerIp ?? "null"}:{Globals.Instance.ServerPort}");
                     return;
                 }
@@ -82,227 +74,112 @@ namespace HyperTizen
 
                 lock (_lock)
                 {
-                    _client = new TcpClient(Globals.Instance.ServerIp, Globals.Instance.ServerPort);
-
-                    // Disable Nagle's algorithm to prevent buffering delays
-                    _client.NoDelay = true;
-
-                    Helper.Log.Write(Helper.eLogType.Info, "TCP: Socket created (NoDelay=true)");
-
-                    if (_client == null || !_client.Connected)
+                    _client = new TcpClient(Globals.Instance.ServerIp, Globals.Instance.ServerPort)
                     {
-                        Helper.Log.Write(Helper.eLogType.Error, "TCP FAILED: Client null/not connected");
-                        return;
-                    }
-
-                    Helper.Log.Write(Helper.eLogType.Info, "TCP: Connected! Getting stream...");
-
+                        NoDelay = true
+                    };
                     _stream = _client.GetStream();
-                    if (_stream == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Error, "TCP FAILED: No stream");
-                        return;
-                    }
 
-                    Helper.Log.Write(Helper.eLogType.Info, "TCP: Stream OK, creating FlatBuffer msg...");
-
-                    byte[] registrationMessage = Networking.CreateRegistrationMessage();
+                    byte[] registrationMessage = CreateRegistrationMessage();
                     if (registrationMessage == null)
                     {
-                        Helper.Log.Write(Helper.eLogType.Error, "TCP FAILED: No FlatBuffer message");
+                        Helper.Log.Write(Helper.eLogType.Error,
+                            "TCP FAILED: No FlatBuffer registration message");
                         return;
                     }
 
-                    // HyperHDR expects BIG-ENDIAN 4-byte size prefix (not FlatBuffers standard little-endian)
-                    var header = new byte[4];
-                    header[0] = (byte)((registrationMessage.Length >> 24) & 0xFF);  // Big-endian
-                    header[1] = (byte)((registrationMessage.Length >> 16) & 0xFF);
-                    header[2] = (byte)((registrationMessage.Length >> 8) & 0xFF);
-                    header[3] = (byte)(registrationMessage.Length & 0xFF);
-
-                    Helper.Log.Write(Helper.eLogType.Info,
-                        $"TCP: Sending {registrationMessage.Length} bytes with big-endian header...");
-
-                    _stream.Write(header, 0, header.Length);
+                    WriteLengthPrefix(_stream, registrationMessage.Length);
                     _stream.Write(registrationMessage, 0, registrationMessage.Length);
-
-                    // CRITICAL FIX: Flush the stream to ensure data is actually sent!
-                    // Without this, data stays in buffer and HyperHDR never receives it
                     _stream.Flush();
-
-                    Helper.Log.Write(Helper.eLogType.Info, "TCP: Data sent and flushed, waiting for reply...");
+                    Helper.Log.Write(Helper.eLogType.Info,
+                        $"TCP: Sent registration ({registrationMessage.Length} bytes), waiting for reply...");
                 }
 
                 ReadRegisterReply();
-                
-                Helper.Log.Write(Helper.eLogType.Info, "TCP OK: Fully registered!");
             }
             catch (SocketException ex)
             {
-                Helper.Log.Write(Helper.eLogType.Error, 
+                Helper.Log.Write(Helper.eLogType.Error,
                     $"SOCKET ERROR: {ex.Message} (Code:{ex.ErrorCode})");
                 DisconnectClient();
             }
             catch (Exception ex)
             {
-                Helper.Log.Write(Helper.eLogType.Error, 
-                    $"ERROR: {ex.GetType().Name}: {ex.Message}");
+                Helper.Log.Write(Helper.eLogType.Error,
+                    $"TCP registration error: {ex.GetType().Name}: {ex.Message}");
                 DisconnectClient();
             }
         }
 
-        public static async Task SendImageAsync(byte[] yData, byte[] uvData, int width, int height)
+        public static async Task<bool> SendImageAsync(byte[] yData, byte[] uvData, int width, int height)
         {
-            // ENHANCED NULL SAFETY: Check client validity before proceeding
+            await _imageSendLock.WaitAsync();
             try
             {
                 lock (_lock)
                 {
-                    if (_client == null)
+                    if (_client == null || _client.Client == null || !_client.Connected || _stream == null)
                     {
-                        Helper.Log.Write(Helper.eLogType.Warning, "SendImageAsync: ❌ client is null");
-                        return;
-                    }
-
-                    if (_client.Client == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "SendImageAsync: client.Client is null");
-                        return;
-                    }
-
-                    if (!_client.Connected)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "SendImageAsync: client not connected");
-                        return;
-                    }
-
-                    if (_stream == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "SendImageAsync: stream is null");
-                        return;
+                        Helper.Log.Write(Helper.eLogType.Warning,
+                            "SendImageAsync: Connection is not ready");
+                        return false;
                     }
                 }
-            }
-            catch (NullReferenceException ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, $"SendImageAsync: NullRef during validation: {ex.Message}");
-                return;
-            }
-            catch (ObjectDisposedException ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, $"SendImageAsync: Object disposed during validation: {ex.Message}");
-                return;
-            }
 
-            // CRITICAL: Validate buffer parameters at entry point
-            if (yData == null || uvData == null)
+                if (yData == null || uvData == null || width <= 0 || height <= 0)
+                {
+                    Helper.Log.Write(Helper.eLogType.Error,
+                        $"SendImageAsync: Invalid frame data (dimensions={width}x{height}, " +
+                        $"Y null={yData == null}, UV null={uvData == null})");
+                    return false;
+                }
+
+                byte[] message = CreateFlatBufferMessage(yData, uvData, width, height);
+                if (message == null)
+                {
+                    return false;
+                }
+
+                // One sender owns the whole request/reply exchange, preserving TCP frame boundaries.
+                await SendMessageAndReceiveReplyAsync(message);
+                return true;
+            }
+            catch (Exception ex)
             {
                 Helper.Log.Write(Helper.eLogType.Error,
-                    $"SendImageAsync: Null buffers (yData={yData == null}, uvData={uvData == null})");
-                return;
+                    $"SendImageAsync: Frame transport failed: {ex.GetType().Name}: {ex.Message}");
+                DisconnectClient();
+                return false;
             }
-
-            if (width <= 0 || height <= 0)
+            finally
             {
-                Helper.Log.Write(Helper.eLogType.Error,
-                    $"SendImageAsync: Invalid dimensions ({width}x{height})");
-                return;
+                _imageSendLock.Release();
             }
-
-            byte[] message = CreateFlatBufferMessage(yData, uvData, width, height);
-            if (message == null)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, "SendImageAsync: ❌ CreateFlatBufferMessage returned null");
-                return;
-            }
-
-            // Fire-and-forget required to avoid blocking capture loop
-            // Validation above ensures buffers are correct before sending
-            _ = SendMessageAndReceiveReplyAsync(message);
         }
-        static byte[] CreateFlatBufferMessage(byte[] yData, byte[] uvData, int width, int height)
+
+        private static byte[] CreateFlatBufferMessage(byte[] yData, byte[] uvData, int width, int height)
         {
-            // ENHANCED NULL SAFETY: Detailed checks with logging
-            try
+            lock (_lock)
             {
-                lock (_lock)
+                if (_client == null || !_client.Connected || _stream == null)
                 {
-                    if (_client == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateFlatBufferMessage: client is null");
-                        return null;
-                    }
-
-                    if (_client.Client == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateFlatBufferMessage: client.Client is null");
-                        return null;
-                    }
-
-                    if (!_client.Connected)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateFlatBufferMessage: client not connected");
-                        return null;
-                    }
-
-                    if (_stream == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateFlatBufferMessage: stream is null");
-                        return null;
-                    }
+                    Helper.Log.Write(Helper.eLogType.Warning,
+                        "CreateFlatBufferMessage: Connection is not ready");
+                    return null;
                 }
             }
-            catch (NullReferenceException ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, $"CreateFlatBufferMessage: NullRef during validation: {ex.Message}");
-                return null;
-            }
-            catch (ObjectDisposedException ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, $"CreateFlatBufferMessage: Object disposed: {ex.Message}");
-                return null;
-            }
 
-            // CRITICAL: Validate buffer parameters before using them
-            if (yData == null)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, "CreateFlatBufferMessage: yData is null");
-                return null;
-            }
-
-            if (uvData == null)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, "CreateFlatBufferMessage: uvData is null");
-                return null;
-            }
-
-            if (width <= 0 || height <= 0)
+            long expectedYSize = (long)width * height;
+            long expectedUVSize = expectedYSize / 2;
+            if (expectedYSize > int.MaxValue || yData.Length != expectedYSize || uvData.Length != expectedUVSize)
             {
                 Helper.Log.Write(Helper.eLogType.Error,
-                    $"CreateFlatBufferMessage: Invalid dimensions ({width}x{height})");
-                return null;
-            }
-
-            // CRITICAL: Validate buffer sizes match NV12 format
-            int expectedYSize = width * height;
-            int expectedUVSize = (width * height) / 2;
-
-            if (yData.Length != expectedYSize)
-            {
-                Helper.Log.Write(Helper.eLogType.Error,
-                    $"CreateFlatBufferMessage: Invalid Y buffer size. Expected {expectedYSize}, got {yData.Length}");
-                return null;
-            }
-
-            if (uvData.Length != expectedUVSize)
-            {
-                Helper.Log.Write(Helper.eLogType.Error,
-                    $"CreateFlatBufferMessage: Invalid UV buffer size. Expected {expectedUVSize}, got {uvData.Length}");
+                    $"CreateFlatBufferMessage: Invalid NV12 buffers for {width}x{height} " +
+                    $"(Y={yData.Length}/{expectedYSize}, UV={uvData.Length}/{expectedUVSize})");
                 return null;
             }
 
             var builder = new FlatBufferBuilder(yData.Length + uvData.Length + 100);
-
             var yVector = NV12Image.CreateDataYVector(builder, yData);
             var uvVector = NV12Image.CreateDataUvVector(builder, uvData);
 
@@ -311,7 +188,7 @@ namespace HyperTizen
             NV12Image.AddDataUv(builder, uvVector);
             NV12Image.AddWidth(builder, width);
             NV12Image.AddHeight(builder, height);
-            NV12Image.AddStrideY(builder, width);  //TODO: Check if this is correct
+            NV12Image.AddStrideY(builder, width);
             NV12Image.AddStrideUv(builder, width);
             var nv12Image = NV12Image.EndNV12Image(builder);
 
@@ -326,63 +203,23 @@ namespace HyperTizen
             Request.AddCommand(builder, imageOffset.Value);
             var requestOffset = Request.EndRequest(builder);
 
-            // Use regular Finish (NOT FinishSizePrefixed)
-            // HyperHDR expects big-endian size prefix which we'll add manually in SendMessageAndReceiveReplyAsync()
             builder.Finish(requestOffset.Value);
             return builder.SizedByteArray();
         }
 
-        static Reply ParseReply(byte[] receivedData)
-        {
-            var byteBuffer = new ByteBuffer(receivedData, 4); //shift for header
-            return Reply.GetRootAsReply(byteBuffer);
-        }
-
         public static byte[] CreateRegistrationMessage()
         {
-            // ENHANCED NULL SAFETY: Detailed checks with logging
-            try
+            lock (_lock)
             {
-                lock (_lock)
+                if (_client == null || !_client.Connected || _stream == null)
                 {
-                    if (_client == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateRegistrationMessage: client is null");
-                        return null;
-                    }
-
-                    if (_client.Client == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateRegistrationMessage: client.Client is null");
-                        return null;
-                    }
-
-                    if (!_client.Connected)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateRegistrationMessage: client not connected");
-                        return null;
-                    }
-
-                    if (_stream == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, "CreateRegistrationMessage: stream is null");
-                        return null;
-                    }
+                    Helper.Log.Write(Helper.eLogType.Warning,
+                        "CreateRegistrationMessage: Connection is not ready");
+                    return null;
                 }
             }
-            catch (NullReferenceException ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, $"CreateRegistrationMessage: NullRef during validation: {ex.Message}");
-                return null;
-            }
-            catch (ObjectDisposedException ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, $"CreateRegistrationMessage: Object disposed: {ex.Message}");
-                return null;
-            }
 
-            var builder = new FlatBufferBuilder(256); //TODO:Check how to calculate correctly
-
+            var builder = new FlatBufferBuilder(256);
             var originOffset = builder.CreateString("HyperTizen");
 
             Register.StartRegister(builder);
@@ -395,121 +232,11 @@ namespace HyperTizen
             Request.AddCommand(builder, registerOffset.Value);
             var requestOffset = Request.EndRequest(builder);
 
-            // Use regular Finish (NOT FinishSizePrefixed)
-            // HyperHDR expects big-endian size prefix which we'll add manually in SendRegister()
             builder.Finish(requestOffset.Value);
-            byte[] message = builder.SizedByteArray();
-
-            return message;
+            return builder.SizedByteArray();
         }
 
         public static void ReadRegisterReply()
-        {
-            try
-            {
-                lock (_lock)
-                {
-                    if (_client == null || !_client.Connected || _stream == null)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Error, "ReadRegisterReply: No client/stream");
-                        return;
-                    }
-
-                    Helper.Log.Write(Helper.eLogType.Info, "ReadRegisterReply: Waiting for server reply...");
-
-                    // Set read timeout to prevent infinite blocking
-                    _stream.ReadTimeout = 5000; // 5 second timeout
-
-                    byte[] buffer = new byte[1024];
-                    int bytesRead = _stream.Read(buffer, 0, buffer.Length);
-
-                    if (bytesRead > 0)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Info, $"ReadRegisterReply: Got {bytesRead} bytes");
-
-                        byte[] replyData = new byte[bytesRead];
-                        Array.Copy(buffer, replyData, bytesRead);
-
-                        // Log raw reply bytes for debugging
-                        Reply reply = ParseReply(replyData);
-
-                        if (reply.Registered > 0)
-                        {
-                            Helper.Log.Write(Helper.eLogType.Info, "ReadRegisterReply: REGISTERED OK!");
-                        }
-                        else
-                        {
-                            Helper.Log.Write(Helper.eLogType.Error, $"ReadRegisterReply: NOT registered (code: {reply.Registered})");
-                        }
-                    }
-                    else
-                    {
-                        Helper.Log.Write(Helper.eLogType.Error, "ReadRegisterReply: No data received");
-                    }
-                }
-            }
-            catch (System.IO.IOException ex)
-            {
-                // Log stream state at timeout
-                string streamState;
-                lock (_lock)
-                {
-                    streamState = _stream != null ?
-                        $"CanRead={_stream.CanRead}, CanWrite={_stream.CanWrite}, DataAvail={_stream.DataAvailable}" :
-                        "stream is null";
-                }
-
-                Helper.Log.Write(Helper.eLogType.Error,
-                    $"ReadRegisterReply TIMEOUT: {ex.Message}");
-                DisconnectClient();
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error,
-                    $"ReadRegisterReply ERROR: {ex.GetType().Name}: {ex.Message}");
-                Helper.Log.Write(Helper.eLogType.Debug,
-                    $"ReadRegisterReply ERROR: Stack trace: {ex.StackTrace}");
-                DisconnectClient();
-            }
-        }
-
-        public static async Task ReadImageReply()
-        {
-            NetworkStream localStream;
-            lock (_lock)
-            {
-                if (_client == null || !_client.Connected || _stream == null)
-                    return;
-                localStream = _stream;
-            }
-
-            byte[] buffer = new byte[1024];
-            int bytesRead = await localStream.ReadAsync(buffer, 0, buffer.Length);
-            if (bytesRead > 0)
-            {
-
-                byte[] replyData = new byte[bytesRead];
-                Array.Copy(buffer, replyData, bytesRead);
-                Reply reply = ParseReply(replyData);
-
-
-                if (!string.IsNullOrEmpty(reply.Error))
-                {
-                    Helper.Log.Write(Helper.eLogType.Error, "SendMessageAndReceiveReply: (closing tcp client now) Reply_Error: " + reply.Error);
-                    //Debug.WriteLine("SendMessageAndReceiveReply: Faulty msg(size:" + message.Length + "): " + BitConverter.ToString(message));
-                    DisconnectClient();
-                    return;
-                }
-            }
-            else
-            {
-                Helper.Log.Write(Helper.eLogType.Error, "SendMessageAndReceiveReply: (closing tcp client now) No Answer from Server.");
-                DisconnectClient();
-                return;
-            }
-        }
-
-        static async Task SendMessageAndReceiveReplyAsync(byte[] message)
         {
             try
             {
@@ -518,33 +245,164 @@ namespace HyperTizen
                 {
                     if (_client == null || !_client.Connected || _stream == null)
                     {
-                        Helper.Log.Write(Helper.eLogType.Warning,
-                            $"SendMessageAndReceiveReplyAsync: Connection not ready");
+                        Helper.Log.Write(Helper.eLogType.Error, "ReadRegisterReply: No client/stream");
                         return;
                     }
+
                     localStream = _stream;
+                    localStream.ReadTimeout = 5000;
                 }
 
-                // HyperHDR expects BIG-ENDIAN 4-byte size prefix (not FlatBuffers standard little-endian)
-                var header = new byte[4];
-                header[0] = (byte)((message.Length >> 24) & 0xFF);  // Big-endian
+                byte[] payload = ReadReplyPayload(localStream);
+                Reply reply = Reply.GetRootAsReply(new ByteBuffer(payload));
+                if (reply.Registered > 0)
+                {
+                    Helper.Log.Write(Helper.eLogType.Info, "ReadRegisterReply: REGISTERED OK!");
+                }
+                else
+                {
+                    Helper.Log.Write(Helper.eLogType.Error,
+                        $"ReadRegisterReply: NOT registered (code: {reply.Registered})");
+                    DisconnectClient();
+                }
+            }
+            catch (Exception ex)
+            {
+                Helper.Log.Write(Helper.eLogType.Error,
+                    $"ReadRegisterReply failed: {ex.GetType().Name}: {ex.Message}");
+                DisconnectClient();
+            }
+        }
+
+        private static byte[] ReadReplyPayload(NetworkStream localStream)
+        {
+            byte[] header = new byte[4];
+            if (!ReadExactly(localStream, header, 0, header.Length))
+            {
+                throw new EndOfStreamException("Connection closed before reply header");
+            }
+
+            int payloadLength = GetPayloadLength(header);
+            byte[] payload = new byte[payloadLength];
+            if (!ReadExactly(localStream, payload, 0, payload.Length))
+            {
+                throw new EndOfStreamException("Connection closed before complete reply");
+            }
+
+            return payload;
+        }
+
+        private static bool ReadExactly(NetworkStream localStream, byte[] buffer, int offset, int count)
+        {
+            int totalRead = 0;
+            while (totalRead < count)
+            {
+                int bytesRead = localStream.Read(buffer, offset + totalRead, count - totalRead);
+                if (bytesRead == 0)
+                {
+                    return false;
+                }
+
+                totalRead += bytesRead;
+            }
+
+            return true;
+        }
+
+        private static async Task<bool> ReadExactlyAsync(
+            NetworkStream localStream,
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+        {
+            int totalRead = 0;
+            while (totalRead < count)
+            {
+                int bytesRead = await localStream.ReadAsync(
+                    buffer,
+                    offset + totalRead,
+                    count - totalRead,
+                    cancellationToken);
+                if (bytesRead == 0)
+                {
+                    return false;
+                }
+
+                totalRead += bytesRead;
+            }
+
+            return true;
+        }
+
+        private static int GetPayloadLength(byte[] header)
+        {
+            long payloadLength = ((long)header[0] << 24) |
+                                 ((long)header[1] << 16) |
+                                 ((long)header[2] << 8) |
+                                 header[3];
+            if (payloadLength <= 0 || payloadLength > MaxReplySize)
+            {
+                throw new InvalidDataException($"Invalid reply length: {payloadLength}");
+            }
+
+            return (int)payloadLength;
+        }
+
+        private static void WriteLengthPrefix(NetworkStream targetStream, int payloadLength)
+        {
+            byte[] header = new byte[4];
+            header[0] = (byte)((payloadLength >> 24) & 0xFF);
+            header[1] = (byte)((payloadLength >> 16) & 0xFF);
+            header[2] = (byte)((payloadLength >> 8) & 0xFF);
+            header[3] = (byte)(payloadLength & 0xFF);
+            targetStream.Write(header, 0, header.Length);
+        }
+
+        private static async Task SendMessageAndReceiveReplyAsync(byte[] message)
+        {
+            NetworkStream localStream;
+            lock (_lock)
+            {
+                if (_client == null || !_client.Connected || _stream == null)
+                {
+                    throw new IOException("Connection not ready for image frame");
+                }
+
+                localStream = _stream;
+            }
+
+            using (CancellationTokenSource timeout = new CancellationTokenSource(5000))
+            {
+                byte[] header = new byte[4];
+                header[0] = (byte)((message.Length >> 24) & 0xFF);
                 header[1] = (byte)((message.Length >> 16) & 0xFF);
                 header[2] = (byte)((message.Length >> 8) & 0xFF);
                 header[3] = (byte)(message.Length & 0xFF);
 
-                await localStream.WriteAsync(header, 0, header.Length);
-                await localStream.WriteAsync(message, 0, message.Length);
+                await localStream.WriteAsync(header, 0, header.Length, timeout.Token);
+                await localStream.WriteAsync(message, 0, message.Length, timeout.Token);
                 await localStream.FlushAsync();
 
-                _ = ReadImageReply();
-            }
-            catch (Exception ex)
-            {
-                Helper.Log.Write(Helper.eLogType.Error, "SendMessageAndReceiveReply: Exception (closing tcp client now) Sending/Receiving: " + ex.Message);
-                DisconnectClient();
-                return;
+                byte[] replyHeader = new byte[4];
+                if (!await ReadExactlyAsync(localStream, replyHeader, 0, replyHeader.Length, timeout.Token))
+                {
+                    throw new EndOfStreamException("Connection closed before image reply header");
+                }
+
+                int replyLength = GetPayloadLength(replyHeader);
+                byte[] replyPayload = new byte[replyLength];
+                if (!await ReadExactlyAsync(localStream, replyPayload, 0, replyPayload.Length, timeout.Token))
+                {
+                    throw new EndOfStreamException("Connection closed before complete image reply");
+                }
+
+                Reply reply = Reply.GetRootAsReply(new ByteBuffer(replyPayload));
+                if (!string.IsNullOrEmpty(reply.Error))
+                {
+                    throw new IOException("Server rejected image: " + reply.Error);
+                }
             }
         }
-
     }
 }

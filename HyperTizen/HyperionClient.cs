@@ -58,6 +58,8 @@ namespace HyperTizen
         // Capture architecture fields
         private ICaptureMethod _selectedCaptureMethod;
         private CaptureMethodSelector _captureSelector;
+        private readonly FrameTemporalFilter _frameTemporalFilter = new FrameTemporalFilter();
+        private bool _hasLoggedFirstFrameStats = false;
 
         // Capture statistics
         private long _framesCaptured = 0;
@@ -210,6 +212,8 @@ namespace HyperTizen
                 _framesCaptured = 0;
                 _errorCount = 0;
                 _fpsHistory.Clear();
+                _frameTemporalFilter.Reset();
+                _hasLoggedFirstFrameStats = false;
 
                 // Create new cancellation token source
                 _cancellationTokenSource = new CancellationTokenSource();
@@ -476,17 +480,16 @@ namespace HyperTizen
                                     Globals.Instance.Height);
                             });
 
-                            watchFPS.Stop();
-
                             // Process capture result
                             if (captureResult != null && captureResult.Success)
                             {
-                                var elapsedFPS = 1 / watchFPS.Elapsed.TotalSeconds;
-
                                 // STEP 9: Initiate FlatBuffers connection (send frame)
+                                bool frameSent;
                                 try
                                 {
-                                    _ = Networking.SendImageAsync(
+                                    _frameTemporalFilter.Apply(captureResult);
+                                    LogFirstFrameStats(captureResult);
+                                    frameSent = await Networking.SendImageAsync(
                                         captureResult.YData,
                                         captureResult.UVData,
                                         captureResult.Width,
@@ -505,6 +508,25 @@ namespace HyperTizen
                                     throw;
                                 }
 
+                                watchFPS.Stop();
+
+                                if (!frameSent)
+                                {
+                                    Helper.Log.Write(Helper.eLogType.Warning,
+                                        "Capture frame was not delivered; retrying after reconnect check");
+                                    consecutiveErrors++;
+                                    await Task.Delay(500, _cancellationTokenSource.Token);
+                                    continue;
+                                }
+
+                                // Limit updates to 30 FPS. Sending every captured frame made transient
+                                // sampling noise and network timing visible as LED flicker.
+                                const int targetFrameIntervalMs = 33;
+                                int frameDelayMs = Math.Max(0,
+                                    targetFrameIntervalMs - (int)watchFPS.ElapsedMilliseconds);
+                                double frameDurationSeconds = watchFPS.Elapsed.TotalSeconds + frameDelayMs / 1000.0;
+                                double elapsedFPS = frameDurationSeconds > 0 ? 1.0 / frameDurationSeconds : 0;
+
                                 // Update statistics
                                 _framesCaptured++;
                                 _fpsHistory.Add(elapsedFPS);
@@ -515,9 +537,15 @@ namespace HyperTizen
 
                                 // Reset error counter on success
                                 consecutiveErrors = 0;
+
+                                if (frameDelayMs > 0)
+                                {
+                                    await Task.Delay(frameDelayMs, _cancellationTokenSource.Token);
+                                }
                             }
                             else
                             {
+                                watchFPS.Stop();
                                 // Capture failed
                                 string errorMsg = captureResult?.ErrorMessage ?? "Unknown capture error";
                                 Helper.Log.Write(Helper.eLogType.Warning,
@@ -607,6 +635,35 @@ namespace HyperTizen
                 _isRunning = false;
                 Helper.Log.Write(Helper.eLogType.Info, "HyperionClient Start() method completed");
             }
+        }
+
+        private void LogFirstFrameStats(CaptureResult frame)
+        {
+            if (_hasLoggedFirstFrameStats || frame == null || frame.YData == null || frame.YData.Length == 0)
+            {
+                return;
+            }
+
+            int min = 255;
+            int max = 0;
+            long sum = 0;
+            int sampleStep = Math.Max(1, frame.YData.Length / 4096);
+            int sampleCount = 0;
+
+            for (int i = 0; i < frame.YData.Length; i += sampleStep)
+            {
+                int value = frame.YData[i];
+                min = Math.Min(min, value);
+                max = Math.Max(max, value);
+                sum += value;
+                sampleCount++;
+            }
+
+            double average = sum / (double)sampleCount;
+            Helper.Log.Write(Helper.eLogType.Info,
+                $"First captured frame ({frame.Width}x{frame.Height}): Y range {min}..{max}, " +
+                $"sampled mean {average:F1}");
+            _hasLoggedFirstFrameStats = true;
         }
 
         public async Task Stop()

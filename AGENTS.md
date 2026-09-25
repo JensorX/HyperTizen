@@ -11,9 +11,10 @@ This document provides essential guidance for Claude or other LLMs working with 
 HyperTizen is an experimental fork of a Hyperion/HyperHDR screen capturer for Samsung Tizen TVs, focused on **Tizen 8.0+ screen capture research**.
 
 **Current Status:**
-- **T8 SDK Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
-- **T7 SDK Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
-- **Pixel Sampling Capture Method** = NOT YET IMPLEMENTED (scaffolding exists)
+- The project targets Tizen 9 (`tizen90`); hardware behavior must be confirmed on the actual TV.
+- `CaptureMethodSelector` tries T9Video → T9Display → T8SDK → T7SDK → PixelSampling; the startup log records the selected method.
+- T8/T7 are fallback scaffolding. T9 methods are firmware-dependent candidates.
+- PixelSampling is implemented. Recent code fixes serialize sample batches, preserve separate edge colors, filter temporal outliers, and stabilize frame delivery; hardware validation remains pending.
 
 **Critical Constraint:** Always verify methods on actual TV hardware - emulator testing is not reliable. Different Tizen firmware versions may have different API availability.
 
@@ -60,20 +61,30 @@ Startup Flow:
 3. Failed methods are automatically cleaned up
 4. Single active capture method used for entire session
 
-Three Capture Methods (Priority Order):
-1. T8SdkCaptureMethod
+Five Capture Methods (Priority Order):
+1. T9VideoCaptureMethod
+   ├─ libvideo-capture.so.0.1.0
+   ├─ Native YUV frame capture candidates
+   └─ Firmware/API availability must be verified on hardware
+
+2. T9DisplayCaptureMethod
+   ├─ libdisplay-capture-api.so
+   ├─ Synchronous display capture candidate
+   └─ Buffer format/stride semantics must be verified on hardware
+
+3. T8SdkCaptureMethod
    ├─ libvideo-capture.so.0.1.0
    ├─ Vtable implementation (Lock → getVideoMainYUV → Unlock)
    ├─ May not be available on all firmware versions
    └─ See: HyperTizen/Capture/T8SdkCaptureMethod.cs
 
-2. T7SdkCaptureMethod
+4. T7SdkCaptureMethod
    ├─ libsec-video-capture.so.0
    ├─ Legacy API from Tizen 7.0 and earlier
    ├─ May not exist on Tizen 8.0+ firmware
    └─ See: HyperTizen/Capture/T7SdkCaptureMethod.cs
 
-3. PixelSamplingCaptureMethod
+5. PixelSamplingCaptureMethod
    ├─ libvideoenhance.so
    ├─ VideoEnhance_SamplePixel() - samples individual RGB pixels
    ├─ Slower than frame capture, may have different availability
@@ -98,9 +109,9 @@ Three Capture Methods (Priority Order):
 - **`HyperTizen/Capture/ICaptureMethod.cs`** - Interface for all capture methods
 - **`HyperTizen/Capture/CaptureMethodSelector.cs`** - Tests and selects best method
 - **`HyperTizen/Capture/CaptureResult.cs`** - Standardized capture result wrapper
-- **`HyperTizen/Capture/T8SdkCaptureMethod.cs`** - T8 API (implementation complete)
+- **`HyperTizen/Capture/T8SdkCaptureMethod.cs`** - T8 API fallback scaffolding
 - **`HyperTizen/Capture/T7SdkCaptureMethod.cs`** - T7 legacy API (missing on T8+)
-- **`HyperTizen/Capture/PixelSamplingCaptureMethod.cs`** - Pixel sampling approach
+- **`HyperTizen/Capture/PixelSamplingCaptureMethod.cs`** - VideoEnhance edge sampling, batched reads, NV12 conversion
 
 **Core Services:**
 - **`HyperTizen/LogWebSocketServer.cs`** - WebSocket log streaming

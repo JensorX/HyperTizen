@@ -54,6 +54,10 @@ namespace HyperTizen.Capture
             new CapturePoint(0.05, 0.40),
             new CapturePoint(0.05, 0.20)
         };
+        private Color[] _lastGoodColors = new Color[16];
+        private bool[] _hasLastGoodColors = new bool[16];
+        private bool _hasLoggedSampleRange = false;
+        private DateTime _lastSamplingErrorLog = DateTime.MinValue;
 
         public string Name => "Pixel Sampling";
         public CaptureMethodType Type => CaptureMethodType.PixelSampling;
@@ -424,18 +428,37 @@ namespace HyperTizen.Capture
                     return false;
                 }
 
-                // Test 2: MeasurePosition (validate entry point exists with dummy coordinates)
-                int positionResult = positionFunc(0, 0, 0);
-                // Position may fail if called before proper setup, but entry point should exist
+                if (_condition.Width <= 0 || _condition.Height <= 0 || _condition.ScreenCapturePoints <= 0)
+                {
+                    Helper.Log.Write(Helper.eLogType.Warning,
+                        $"PixelSampling: {variant}/{libPath} returned invalid condition " +
+                        $"({_condition.Width}x{_condition.Height}, points={_condition.ScreenCapturePoints})");
+                    return false;
+                }
+
+                // Validate that a real position can be configured before selecting this API variant.
+                int positionResult = positionFunc(0, _condition.Width / 2, _condition.Height / 2);
                 Helper.Log.Write(Helper.eLogType.Debug,
                     $"PixelSampling: {variant}/{libPath} position entry point exists (result: {positionResult})");
+                if (positionResult < 0)
+                {
+                    return false;
+                }
 
-                // Test 3: MeasurePixel (validate entry point exists)
+                if (_condition.SleepMS > 0)
+                {
+                    Thread.Sleep(_condition.SleepMS);
+                }
+
+                // Validate that the configured measurement slot can return a sample.
                 Color dummyColor;
                 int pixelResult = pixelFunc(0, out dummyColor);
-                // Pixel may fail if no position set yet, but entry point should exist
                 Helper.Log.Write(Helper.eLogType.Debug,
                     $"PixelSampling: {variant}/{libPath} pixel entry point exists (result: {pixelResult})");
+                if (pixelResult < 0)
+                {
+                    return false;
+                }
 
                 // Success - all three entry points exist and condition succeeded
                 _workingVariant = variant;
@@ -560,71 +583,68 @@ namespace HyperTizen.Capture
         }
 
         /// <summary>
-        /// Sample pixel colors from predefined screen positions
-        /// OPTIMIZED: Sets ALL positions first, then ONE sleep, then reads ALL pixels
-        /// This ensures all sampling happens at the same moment for temporal consistency
+        /// Sample the edge points in batches no larger than the native measurement capacity.
+        /// A batch must be read before its native slots are reused for the next batch.
         /// </summary>
         private Color[] GetColors()
         {
             Color[] colorData = new Color[_capturedPoints.Length];
 
-            if (_condition.ScreenCapturePoints == 0)
+            int batchCapacity = _condition.ScreenCapturePoints;
+            if (batchCapacity <= 0 || _pixelCoordinates == null ||
+                _pixelCoordinates.Length != _capturedPoints.Length)
             {
-                Helper.Log.Write(Helper.eLogType.Error, "PixelSampling: ScreenCapturePoints is 0");
-                return colorData;
+                Helper.Log.Write(Helper.eLogType.Error,
+                    $"PixelSampling: Invalid sampling configuration (capacity={batchCapacity})");
+                return null;
             }
 
-            // PHASE 1: Set ALL measurement positions first (no delays between batches)
-            int i = 0;
-            while (i < _capturedPoints.Length)
+            int[] positionResults = new int[Math.Min(batchCapacity, _capturedPoints.Length)];
+            int usableSampleCount = 0;
+
+            for (int batchStart = 0; batchStart < _capturedPoints.Length; batchStart += batchCapacity)
             {
-                // Set positions for this batch
-                for (int j = 0; j < _condition.ScreenCapturePoints && i < _capturedPoints.Length; j++)
+                int batchCount = Math.Min(batchCapacity, _capturedPoints.Length - batchStart);
+
+                // Configure this batch, then wait for the native measurement to settle.
+                for (int slot = 0; slot < batchCount; slot++)
                 {
-                    // Use pre-calculated pixel coordinates
-                    int x = _pixelCoordinates[i].X;
-                    int y = _pixelCoordinates[i].Y;
+                    int pointIndex = batchStart + slot;
+                    PixelCoordinate coordinate = _pixelCoordinates[pointIndex];
+                    positionResults[slot] = CallMeasurePosition(slot, coordinate.X, coordinate.Y);
 
-                    // Set the measurement position
-                    int res = CallMeasurePosition(j, x, y);
-
-                    if (res < 0)
+                    if (positionResults[slot] < 0)
                     {
-                        Helper.Log.Write(Helper.eLogType.Error,
-                            $"PixelSampling: MeasurePosition failed for point {i} at ({x}, {y}) with error {res}");
+                        LogSamplingError(
+                            $"PixelSampling: MeasurePosition failed for point {pointIndex} at " +
+                            $"({coordinate.X}, {coordinate.Y}) with error {positionResults[slot]}");
                     }
-
-                    i++;
                 }
-            }
 
-            // PHASE 2: Single sleep after ALL positions are set
-            // This ensures all measurements happen at approximately the same time
-            if (_condition.SleepMS > 0)
-            {
-                Thread.Sleep(_condition.SleepMS);
-            }
-
-            // PHASE 3: Read ALL pixel colors in batches
-            i = 0;
-            while (i < _capturedPoints.Length)
-            {
-                // Read pixels for this batch
-                for (int j = 0; j < _condition.ScreenCapturePoints && i < _capturedPoints.Length; j++)
+                if (_condition.SleepMS > 0)
                 {
-                    Color color;
-                    int res = CallMeasurePixel(j, out color);
+                    Thread.Sleep(_condition.SleepMS);
+                }
 
-                    if (res < 0)
+                // Read the batch before its slots are overwritten by the next batch.
+                for (int slot = 0; slot < batchCount; slot++)
+                {
+                    int pointIndex = batchStart + slot;
+                    Color color = default(Color);
+                    bool sampleValid = positionResults[slot] >= 0;
+
+                    if (sampleValid)
                     {
-                        Helper.Log.Write(Helper.eLogType.Error,
-                            $"PixelSampling: MeasurePixel failed for point {i} with error {res}");
-                        // Use black as fallback
-                        color.R = 0;
-                        color.G = 0;
-                        color.B = 0;
+                        int result = CallMeasurePixel(slot, out color);
+                        sampleValid = result >= 0;
+                        if (!sampleValid)
+                        {
+                            LogSamplingError(
+                                $"PixelSampling: MeasurePixel failed for point {pointIndex} with error {result}");
+                        }
                     }
-                    else
+
+                    if (sampleValid)
                     {
                         // Validate color data (10-bit values should be 0-1023)
                         bool invalidColorData = color.R > 1023 || color.G > 1023 || color.B > 1023 ||
@@ -632,202 +652,179 @@ namespace HyperTizen.Capture
 
                         if (invalidColorData)
                         {
-                            Helper.Log.Write(Helper.eLogType.Warning,
-                                $"PixelSampling: Invalid color data at point {i}: R={color.R}, G={color.G}, B={color.B}");
-                            // Clamp to valid range
-                            color.R = Math.Max(0, Math.Min(1023, color.R));
-                            color.G = Math.Max(0, Math.Min(1023, color.G));
-                            color.B = Math.Max(0, Math.Min(1023, color.B));
+                            LogSamplingError(
+                                $"PixelSampling: Invalid color data at point {pointIndex}: R={color.R}, G={color.G}, B={color.B}");
+                            // Treat out-of-range native values as a bad sample; clamping can turn
+                            // a corrupted value into a conspicuous white flash.
+                            sampleValid = false;
                         }
                     }
 
-                    colorData[i] = color;
-                    i++;
+                    if (sampleValid)
+                    {
+                        _lastGoodColors[pointIndex] = color;
+                        _hasLastGoodColors[pointIndex] = true;
+                    }
+                    else if (_hasLastGoodColors[pointIndex])
+                    {
+                        // Keep the previous valid sample instead of injecting a black flash.
+                        color = _lastGoodColors[pointIndex];
+                    }
+                    else
+                    {
+                        continue;
+                    }
+
+                    colorData[pointIndex] = color;
+                    usableSampleCount++;
                 }
+            }
+
+            if (usableSampleCount == 0)
+            {
+                Helper.Log.Write(Helper.eLogType.Warning,
+                    "PixelSampling: No valid samples available; dropping this frame");
+                return null;
+            }
+
+            // On the first frame, fill any never-valid point from its nearest valid neighbor.
+            // This avoids introducing black wedges when only part of a native batch fails.
+            for (int pointIndex = 0; pointIndex < colorData.Length; pointIndex++)
+            {
+                if (_hasLastGoodColors[pointIndex])
+                {
+                    continue;
+                }
+
+                for (int distance = 1; distance < colorData.Length; distance++)
+                {
+                    int before = (pointIndex - distance + colorData.Length) % colorData.Length;
+                    int after = (pointIndex + distance) % colorData.Length;
+                    int neighbor = _hasLastGoodColors[before] ? before :
+                        (_hasLastGoodColors[after] ? after : -1);
+
+                    if (neighbor >= 0)
+                    {
+                        colorData[pointIndex] = _lastGoodColors[neighbor];
+                        break;
+                    }
+                }
+            }
+
+            if (!_hasLoggedSampleRange)
+            {
+                int minR = 1023, minG = 1023, minB = 1023;
+                int maxR = 0, maxG = 0, maxB = 0;
+                for (int i = 0; i < colorData.Length; i++)
+                {
+                    minR = Math.Min(minR, colorData[i].R);
+                    minG = Math.Min(minG, colorData[i].G);
+                    minB = Math.Min(minB, colorData[i].B);
+                    maxR = Math.Max(maxR, colorData[i].R);
+                    maxG = Math.Max(maxG, colorData[i].G);
+                    maxB = Math.Max(maxB, colorData[i].B);
+                }
+
+                Helper.Log.Write(Helper.eLogType.Info,
+                    $"PixelSampling: First RGB sample range R={minR}..{maxR}, G={minG}..{maxG}, B={minB}..{maxB}");
+                Helper.Log.Write(Helper.eLogType.Info,
+                    "PixelSampling: First edge sample ranges: " +
+                    FormatEdgeSampleRange(colorData, "Top", 0) + "; " +
+                    FormatEdgeSampleRange(colorData, "Right", 4) + "; " +
+                    FormatEdgeSampleRange(colorData, "Bottom", 8) + "; " +
+                    FormatEdgeSampleRange(colorData, "Left", 12));
+                _hasLoggedSampleRange = true;
             }
 
             return colorData;
         }
 
+        private string FormatEdgeSampleRange(Color[] colors, string edgeName, int firstIndex)
+        {
+            int minR = 1023, minG = 1023, minB = 1023;
+            int maxR = 0, maxG = 0, maxB = 0;
+
+            for (int i = firstIndex; i < firstIndex + 4; i++)
+            {
+                minR = Math.Min(minR, colors[i].R);
+                minG = Math.Min(minG, colors[i].G);
+                minB = Math.Min(minB, colors[i].B);
+                maxR = Math.Max(maxR, colors[i].R);
+                maxG = Math.Max(maxG, colors[i].G);
+                maxB = Math.Max(maxB, colors[i].B);
+            }
+
+            return $"{edgeName} R={minR}..{maxR} G={minG}..{maxG} B={minB}..{maxB}";
+        }
+
+        private void LogSamplingError(string message)
+        {
+            DateTime now = DateTime.UtcNow;
+            if ((now - _lastSamplingErrorLog).TotalSeconds < 5)
+            {
+                return;
+            }
+
+            _lastSamplingErrorLog = now;
+            Helper.Log.Write(Helper.eLogType.Warning, message);
+        }
+
         /// <summary>
-        /// Convert sampled pixel colors to NV12 format using BT.2020 color space
-        /// Creates a virtual 64x48 image with sampled colors mapped to screen edges
-        /// Uses BT.2020 coefficients for HDR10+ compatibility
+        /// Convert the 16 perimeter samples to a 64x48 synthetic image and limited-range BT.709 NV12.
+        /// Each edge color is extended inward to avoid averaging sampled colors with a black center.
         /// </summary>
         private (byte[] yData, byte[] uvData) ConvertColorsToNV12(Color[] colors)
         {
             const int width = 64;
             const int height = 48;
 
+            if (colors == null || colors.Length < _capturedPoints.Length)
+            {
+                throw new ArgumentException("Expected one color per configured capture point", nameof(colors));
+            }
+
             // Allocate NV12 buffers
             byte[] yData = new byte[width * height];
             byte[] uvData = new byte[width * height / 2]; // UV plane is half the size
-
-            // Create virtual RGB image (same logic as original ToImage method)
             byte[] rgbImage = new byte[width * height * 3]; // RGB888
 
-            // Initialize with black
-            for (int i = 0; i < rgbImage.Length; i++)
+            // Map each image pixel to the nearest sampled edge and interpolate along that edge.
+            // This keeps LED regions colored even when HyperHDR's sampling area extends inward.
+            for (int y = 0; y < height; y++)
             {
-                rgbImage[i] = 0;
-            }
-
-            // 16-point color mapping (4 points per edge)
-            // colors[0-3]   = Top edge (left to right)
-            // colors[4-7]   = Right edge (top to bottom)
-            // colors[8-11]  = Bottom edge (right to left)
-            // colors[12-15] = Left edge (bottom to top)
-
-            // Top edge (colors 0-3) with linear interpolation
-            for (int x = 0; x < 64; x++)
-            {
-                // Determine which segment this x falls into (4 segments)
-                float segmentPos = (x / 63.0f) * 3.0f; // 0.0 to 3.0
-                int segment = Math.Min(2, (int)segmentPos); // 0, 1, or 2
-                float t = segmentPos - segment; // Position within segment (0.0 to 1.0)
-
-                byte r, g, b;
-                if (segment == 0) // colors[0] to colors[1]
+                for (int x = 0; x < width; x++)
                 {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[0].R) + t * ScaleTo8Bit(colors[1].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[0].G) + t * ScaleTo8Bit(colors[1].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[0].B) + t * ScaleTo8Bit(colors[1].B));
-                }
-                else if (segment == 1) // colors[1] to colors[2]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[1].R) + t * ScaleTo8Bit(colors[2].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[1].G) + t * ScaleTo8Bit(colors[2].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[1].B) + t * ScaleTo8Bit(colors[2].B));
-                }
-                else // segment == 2, colors[2] to colors[3]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[2].R) + t * ScaleTo8Bit(colors[3].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[2].G) + t * ScaleTo8Bit(colors[3].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[2].B) + t * ScaleTo8Bit(colors[3].B));
-                }
+                    int distanceTop = y;
+                    int distanceRight = width - 1 - x;
+                    int distanceBottom = height - 1 - y;
+                    int distanceLeft = x;
+                    Color edgeColor;
 
-                for (int y = 0; y < 4; y++)
-                {
-                    int idx = (y * width + x) * 3;
-                    rgbImage[idx + 0] = r;
-                    rgbImage[idx + 1] = g;
-                    rgbImage[idx + 2] = b;
+                    if (distanceTop <= distanceRight && distanceTop <= distanceBottom && distanceTop <= distanceLeft)
+                    {
+                        edgeColor = InterpolateEdgeColor(colors, 0, x / (float)(width - 1));
+                    }
+                    else if (distanceRight <= distanceBottom && distanceRight <= distanceLeft)
+                    {
+                        edgeColor = InterpolateEdgeColor(colors, 4, y / (float)(height - 1));
+                    }
+                    else if (distanceBottom <= distanceLeft)
+                    {
+                        edgeColor = InterpolateEdgeColor(colors, 8, 1.0f - x / (float)(width - 1));
+                    }
+                    else
+                    {
+                        edgeColor = InterpolateEdgeColor(colors, 12, 1.0f - y / (float)(height - 1));
+                    }
+
+                    int rgbIndex = (y * width + x) * 3;
+                    rgbImage[rgbIndex] = ScaleTo8Bit(edgeColor.R);
+                    rgbImage[rgbIndex + 1] = ScaleTo8Bit(edgeColor.G);
+                    rgbImage[rgbIndex + 2] = ScaleTo8Bit(edgeColor.B);
                 }
             }
 
-            // Bottom edge (colors 8-11) with linear interpolation (right to left)
-            for (int x = 0; x < 64; x++)
-            {
-                // Determine which segment this x falls into (4 segments, reversed)
-                float segmentPos = (x / 63.0f) * 3.0f; // 0.0 to 3.0
-                int segment = Math.Min(2, (int)segmentPos); // 0, 1, or 2
-                float t = segmentPos - segment; // Position within segment (0.0 to 1.0)
-
-                byte r, g, b;
-                if (segment == 0) // colors[11] to colors[10]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[11].R) + t * ScaleTo8Bit(colors[10].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[11].G) + t * ScaleTo8Bit(colors[10].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[11].B) + t * ScaleTo8Bit(colors[10].B));
-                }
-                else if (segment == 1) // colors[10] to colors[9]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[10].R) + t * ScaleTo8Bit(colors[9].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[10].G) + t * ScaleTo8Bit(colors[9].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[10].B) + t * ScaleTo8Bit(colors[9].B));
-                }
-                else // segment == 2, colors[9] to colors[8]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[9].R) + t * ScaleTo8Bit(colors[8].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[9].G) + t * ScaleTo8Bit(colors[8].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[9].B) + t * ScaleTo8Bit(colors[8].B));
-                }
-
-                for (int y = 44; y < 48; y++)
-                {
-                    int idx = (y * width + x) * 3;
-                    rgbImage[idx + 0] = r;
-                    rgbImage[idx + 1] = g;
-                    rgbImage[idx + 2] = b;
-                }
-            }
-
-            // Left edge (colors 12-15) with linear interpolation (bottom to top)
-            for (int y = 0; y < 48; y++)
-            {
-                // Determine which segment this y falls into (4 segments)
-                float segmentPos = (y / 47.0f) * 3.0f; // 0.0 to 3.0
-                int segment = Math.Min(2, (int)segmentPos); // 0, 1, or 2
-                float t = segmentPos - segment; // Position within segment (0.0 to 1.0)
-
-                byte r, g, b;
-                if (segment == 0) // colors[15] to colors[14]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[15].R) + t * ScaleTo8Bit(colors[14].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[15].G) + t * ScaleTo8Bit(colors[14].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[15].B) + t * ScaleTo8Bit(colors[14].B));
-                }
-                else if (segment == 1) // colors[14] to colors[13]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[14].R) + t * ScaleTo8Bit(colors[13].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[14].G) + t * ScaleTo8Bit(colors[13].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[14].B) + t * ScaleTo8Bit(colors[13].B));
-                }
-                else // segment == 2, colors[13] to colors[12]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[13].R) + t * ScaleTo8Bit(colors[12].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[13].G) + t * ScaleTo8Bit(colors[12].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[13].B) + t * ScaleTo8Bit(colors[12].B));
-                }
-
-                for (int x = 0; x < 3; x++)
-                {
-                    int idx = (y * width + x) * 3;
-                    rgbImage[idx + 0] = r;
-                    rgbImage[idx + 1] = g;
-                    rgbImage[idx + 2] = b;
-                }
-            }
-
-            // Right edge (colors 4-7) with linear interpolation (top to bottom)
-            for (int y = 0; y < 48; y++)
-            {
-                // Determine which segment this y falls into (4 segments)
-                float segmentPos = (y / 47.0f) * 3.0f; // 0.0 to 3.0
-                int segment = Math.Min(2, (int)segmentPos); // 0, 1, or 2
-                float t = segmentPos - segment; // Position within segment (0.0 to 1.0)
-
-                byte r, g, b;
-                if (segment == 0) // colors[4] to colors[5]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[4].R) + t * ScaleTo8Bit(colors[5].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[4].G) + t * ScaleTo8Bit(colors[5].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[4].B) + t * ScaleTo8Bit(colors[5].B));
-                }
-                else if (segment == 1) // colors[5] to colors[6]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[5].R) + t * ScaleTo8Bit(colors[6].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[5].G) + t * ScaleTo8Bit(colors[6].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[5].B) + t * ScaleTo8Bit(colors[6].B));
-                }
-                else // segment == 2, colors[6] to colors[7]
-                {
-                    r = (byte)((1 - t) * ScaleTo8Bit(colors[6].R) + t * ScaleTo8Bit(colors[7].R));
-                    g = (byte)((1 - t) * ScaleTo8Bit(colors[6].G) + t * ScaleTo8Bit(colors[7].G));
-                    b = (byte)((1 - t) * ScaleTo8Bit(colors[6].B) + t * ScaleTo8Bit(colors[7].B));
-                }
-
-                for (int x = 61; x < 64; x++)
-                {
-                    int idx = (y * width + x) * 3;
-                    rgbImage[idx + 0] = r;
-                    rgbImage[idx + 1] = g;
-                    rgbImage[idx + 2] = b;
-                }
-            }
-
-            // Convert RGB to NV12 using BT.2020 color space (HDR10+ compatible)
-            // Y plane
+            // Convert RGB to limited-range BT.709 NV12 (video-range Y=16..235, UV=16..240).
             for (int y = 0; y < height; y++)
             {
                 for (int x = 0; x < width; x++)
@@ -837,35 +834,60 @@ namespace HyperTizen.Capture
                     byte g = rgbImage[rgbIdx + 1];
                     byte b = rgbImage[rgbIdx + 2];
 
-                    // BT.2020 Y = 0.2627R + 0.678G + 0.0593B
-                    int yVal = (int)(0.2627 * r + 0.678 * g + 0.0593 * b);
-                    yData[y * width + x] = (byte)Math.Max(0, Math.Min(255, yVal));
+                    // BT.709 limited-range luma.
+                    int yVal = (int)Math.Round(16.0 + 0.182586 * r + 0.614231 * g + 0.062007 * b);
+                    yData[y * width + x] = (byte)Math.Max(16, Math.Min(235, yVal));
                 }
             }
 
-            // UV plane (interleaved, subsampled 2x2)
+            // NV12 chroma is interleaved and averaged over each 2x2 RGB block.
             for (int y = 0; y < height; y += 2)
             {
                 for (int x = 0; x < width; x += 2)
                 {
-                    // Sample 2x2 block
-                    int rgbIdx = (y * width + x) * 3;
-                    byte r = rgbImage[rgbIdx + 0];
-                    byte g = rgbImage[rgbIdx + 1];
-                    byte b = rgbImage[rgbIdx + 2];
+                    double r = 0;
+                    double g = 0;
+                    double b = 0;
+                    for (int dy = 0; dy < 2; dy++)
+                    {
+                        for (int dx = 0; dx < 2; dx++)
+                        {
+                            int rgbIndex = ((y + dy) * width + x + dx) * 3;
+                            r += rgbImage[rgbIndex];
+                            g += rgbImage[rgbIndex + 1];
+                            b += rgbImage[rgbIndex + 2];
+                        }
+                    }
 
-                    // BT.2020 U = -0.1396R - 0.36037G + 0.5B + 128
-                    // BT.2020 V = 0.5R - 0.4598G - 0.0402B + 128
-                    int uVal = (int)(-0.1396 * r - 0.36037 * g + 0.5 * b + 128);
-                    int vVal = (int)(0.5 * r - 0.4598 * g - 0.0402 * b + 128);
+                    r /= 4.0;
+                    g /= 4.0;
+                    b /= 4.0;
 
-                    int uvIdx = (y / 2) * width + x;
-                    uvData[uvIdx + 0] = (byte)Math.Max(0, Math.Min(255, uVal)); // U
-                    uvData[uvIdx + 1] = (byte)Math.Max(0, Math.Min(255, vVal)); // V
+                    int uVal = (int)Math.Round(128.0 - 0.100644 * r - 0.338572 * g + 0.439216 * b);
+                    int vVal = (int)Math.Round(128.0 + 0.439216 * r - 0.398942 * g - 0.040274 * b);
+                    int uvIndex = (y / 2) * width + x;
+                    uvData[uvIndex] = (byte)Math.Max(16, Math.Min(240, uVal));
+                    uvData[uvIndex + 1] = (byte)Math.Max(16, Math.Min(240, vVal));
                 }
             }
 
             return (yData, uvData);
+        }
+
+        private Color InterpolateEdgeColor(Color[] colors, int firstIndex, float position)
+        {
+            float segmentPosition = Math.Max(0, Math.Min(1, position)) * 3.0f;
+            int segment = Math.Min(2, (int)segmentPosition);
+            float blend = segmentPosition - segment;
+            Color first = colors[firstIndex + segment];
+            Color second = colors[firstIndex + segment + 1];
+
+            return new Color
+            {
+                R = (int)Math.Round(first.R + (second.R - first.R) * blend),
+                G = (int)Math.Round(first.G + (second.G - first.G) * blend),
+                B = (int)Math.Round(first.B + (second.B - first.B) * blend)
+            };
         }
 
         /// <summary>
@@ -875,7 +897,7 @@ namespace HyperTizen.Capture
         private byte ScaleTo8Bit(int value)
         {
             // Scale 10-bit (0-1023) to 8-bit (0-255)
-            return (byte)Math.Min(255, value * 255 / 1023);
+            return (byte)Math.Max(0, Math.Min(255, value * 255 / 1023));
         }
 
         /// <summary>
@@ -925,6 +947,10 @@ namespace HyperTizen.Capture
         public void Cleanup()
         {
             _isInitialized = false;
+            _lastGoodColors = new Color[_capturedPoints.Length];
+            _hasLastGoodColors = new bool[_capturedPoints.Length];
+            _hasLoggedSampleRange = false;
+            _lastSamplingErrorLog = DateTime.MinValue;
             Helper.Log.Write(Helper.eLogType.Debug, "PixelSampling: Cleaned up");
         }
     }

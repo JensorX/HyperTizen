@@ -48,11 +48,14 @@ agents:
     context: >
       HyperTizen uses a systematic fallback capture architecture with the
       ICaptureMethod interface. The selector order is T9Video, T9Display, T8SDK,
-      T7SDK, then PixelSampling. On the supplied S90C/Tizen 9 log, T9Video tests
-      returned -1, T9Display returned -2, and PixelSampling using ppi_ve_* was
-      selected with ScreenCapturePoints=2 and SleepMS=20. Four edge anchors
-      require two set-wait-read batches (about 25 FPS maximum before overhead).
-      The updated batch/color-filter code must still be verified on that TV.
+      T7SDK, then PixelSampling. The supplied S90C/Tizen 9 log came from an
+      earlier build: T9Video tests returned -1, T9Display returned -2, and
+      PixelSampling using ppi_ve_* was selected with ScreenCapturePoints=2 and
+      SleepMS=20. Current T9Video source uses the reference-backed
+      getVideoMainYUV path but has not been retested; T9Display is disabled
+      until its ABI and request metadata are verified. Four edge anchors need
+      two set-wait-read batches (about 25 FPS maximum before overhead).
+      The updated sampling filters and diagnostics also need TV validation.
 
   - name: debugging-assistant
     description: >
@@ -252,11 +255,14 @@ project:
   language: C#
   platform: .NET on Samsung Tizen TV
   current_status: >
-    On the tested Samsung S90C running Tizen 9, T9Video capture tests return -1,
-    T9Display returns -2, and PixelSampling (ppi_ve_*) is selected with two
-    measurement slots and a 20ms wait. A code fix now samples four edge anchors
-    in correctly sequenced batches and filters transient spikes; the updated
-    build still needs real-TV validation. T8/T7 behavior varies by firmware.
+    Earlier testing on the Samsung S90C running Tizen 9 showed T9Video results
+    including -1/-6 and T9Display -2; these codes are unexplained and came from
+    an older probe. Current T9Video source calls the reference-backed
+    getVideoMainYUV method but is not retested. T9Display is fail-closed until
+    its full ABI and request metadata are known. PixelSampling (ppi_ve_*) was
+    selected with two measurement slots and a 20ms wait. Four-anchor batching,
+    transient filtering, and the new sample diagnostics still need real-TV
+    validation. T8/T7 behavior varies by firmware.
     WebSocket logging and diagnostic mode are working.
 
 # How to use this file

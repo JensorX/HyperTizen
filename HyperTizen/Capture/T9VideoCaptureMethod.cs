@@ -5,9 +5,8 @@ using Tizen.System;
 namespace HyperTizen.Capture
 {
     /// <summary>
-    /// Tizen 9 video capture method using libvideo-capture.so.0.1.0
-    /// Tests multiple entry points: secvideo_api_*, ppi_video_capture_*, and IVideoCapture C++ API
-    /// Based on analysis of Tizen 9 library exports
+    /// Tizen 9 video capture probe using the reference-backed IVideoCapture
+    /// singleton/vtable path from libvideo-capture.so.0.1.0.
     /// </summary>
     public class T9VideoCaptureMethod : ICaptureMethod
     {
@@ -34,116 +33,79 @@ namespace HyperTizen.Capture
 
         #endregion
 
-        #region P/Invoke Declarations - secvideo_api_* (Plain C API - Priority 1)
+        #region Native IVideoCapture API
 
-        // === Entry Point 1: secvideo_api_capture_screen_video_only ===
-        [DllImport("/usr/lib/libvideo-capture.so.0.1.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "secvideo_api_capture_screen_video_only")]
-        private static extern int secvideo_api_capture_screen_video_only_0_1_0(
+        private const string VideoCaptureLibrary = "/usr/lib/libvideo-capture.so.0.1.0";
+        private const int MainYuvVtableOffset = 0x0c;
+        private const int CaptureLockVtableOffset = 0x34;
+        private const int CaptureUnlockVtableOffset = 0x38;
+        private const int MinimumNativeBufferSize = 0x7e900;
+        private const byte BufferSentinel = 0xa5;
+        private const int NativeBufferFillChunkSize = 64 * 1024;
+        private static readonly byte[] NativeBufferFillChunk = CreateNativeBufferFillChunk();
+
+        [DllImport(VideoCaptureLibrary, CallingConvention = CallingConvention.Cdecl,
+            EntryPoint = "_ZN13IVideoCapture11getInstanceEv")]
+        private static extern IntPtr IVideoCapture_getInstance();
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int CaptureMethodDelegate(
+            IntPtr instance,
             ref InputParams inputParams,
             ref OutputParams outputParams);
 
-        [DllImport("/usr/lib/libvideo-capture.so.0.1", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "secvideo_api_capture_screen_video_only")]
-        private static extern int secvideo_api_capture_screen_video_only_0_1(
-            ref InputParams inputParams,
-            ref OutputParams outputParams);
-
-        [DllImport("/usr/lib/libvideo-capture.so", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "secvideo_api_capture_screen_video_only")]
-        private static extern int secvideo_api_capture_screen_video_only(
-            ref InputParams inputParams,
-            ref OutputParams outputParams);
-
-        // === Entry Point 2: secvideo_api_capture_screen ===
-        [DllImport("/usr/lib/libvideo-capture.so.0.1.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "secvideo_api_capture_screen")]
-        private static extern int secvideo_api_capture_screen_0_1_0(
-            ref InputParams inputParams,
-            ref OutputParams outputParams);
-
-        [DllImport("/usr/lib/libvideo-capture.so.0.1", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "secvideo_api_capture_screen")]
-        private static extern int secvideo_api_capture_screen_0_1(
-            ref InputParams inputParams,
-            ref OutputParams outputParams);
-
-        [DllImport("/usr/lib/libvideo-capture.so", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "secvideo_api_capture_screen")]
-        private static extern int secvideo_api_capture_screen(
-            ref InputParams inputParams,
-            ref OutputParams outputParams);
-
-        #endregion
-
-        #region P/Invoke Declarations - ppi_video_capture_* (Plain C API - Priority 2)
-
-        // Lock/Unlock functions
-        [DllImport("/usr/lib/libvideo-capture.so.0.1.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "ppi_video_capture_lock_global")]
-        private static extern int ppi_video_capture_lock_global();
-
-        [DllImport("/usr/lib/libvideo-capture.so.0.1.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "ppi_video_capture_unlock_global")]
-        private static extern int ppi_video_capture_unlock_global();
-
-        // Main video YUV capture
-        [DllImport("/usr/lib/libvideo-capture.so.0.1.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "ppi_video_capture_get_video_main_yuv")]
-        private static extern int ppi_video_capture_get_video_main_yuv(
-            ref InputParams inputParams,
-            ref OutputParams outputParams);
-
-        // Screen post-processing YUV capture
-        [DllImport("/usr/lib/libvideo-capture.so.0.1.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "ppi_video_capture_get_screen_post_yuv")]
-        private static extern int ppi_video_capture_get_screen_post_yuv(
-            ref InputParams inputParams,
-            ref OutputParams outputParams);
-
-        // Protection check
-        [DllImport("/usr/lib/libvideo-capture.so.0.1.0", CallingConvention = CallingConvention.Cdecl,
-            EntryPoint = "ppi_video_capture_is_protect_capture")]
-        private static extern int ppi_video_capture_is_protect_capture(
-            out int isProtected);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void CaptureLockDelegate(IntPtr instance, int captureType, int flags);
 
         #endregion
 
         #region Native Structs
 
         /// <summary>
-        /// Input parameters for video capture
-        /// Based on analysis of libvideo-capture.so and reference implementation
+        /// Input parameters for IVideoCapture::getVideoMainYUV.
+        /// The nine 32-bit fields match the Tizen capture reference structure.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         public struct InputParams
         {
-            public int field0;          // Usually 0
-            public int field1;          // Usually 0
-            public int cropX;           // Crop X (use 0xffff for full screen)
-            public int cropY;           // Crop Y (use 0xffff for full screen)
-            public int field4;          // Usually 1
-            public int yBufferSize;     // Y buffer size (e.g., 0x7e900 for 1920x1080)
-            public int uvBufferSize;    // UV buffer size (e.g., 0x7e900 for 1920x1080)
-            public IntPtr pYBuffer;     // Pointer to Y buffer
-            public IntPtr pUVBuffer;    // Pointer to UV buffer
+            public int field0;
+            public int field1;
+            public int field2;
+            public int field3;
+            public int cropX;           // Offset 0x10; 0xffff requests full screen
+            public int cropY;           // Offset 0x14; 0xffff requests full screen
+            public int field6;          // Offset 0x18; set to 1
+            public int field7;
+            public int field8;
         }
 
         /// <summary>
-        /// Output parameters from video capture
-        /// Contains actual captured dimensions and buffer info
+        /// Output parameters for IVideoCapture. The native structure is 80 bytes;
+        /// output buffers begin at offsets 0x30 and 0x34.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         public struct OutputParams
         {
             public int width;           // Captured width
             public int height;          // Captured height
-            public int field2;          // Unknown field
-            public int field3;          // Unknown field
-            public int ySize;           // Actual Y buffer size used
-            public int uvSize;          // Actual UV buffer size used
+            public int field2;
+            public int field3;
+            public int field4;
+            public int field5;
+            public int field6;
+            public int field7;
+            public int field8;
+            public int field9;
+            public int ySize;           // Offset 0x28; buffer capacity
+            public int uvSize;          // Offset 0x2c; buffer capacity
             public IntPtr pYData;       // Pointer to Y data
             public IntPtr pUVData;      // Pointer to UV data
+            public int field14;
+            public int field15;
+            public int field16;
+            public int field17;
+            public int field18;
+            public int field19;
         }
 
         #endregion
@@ -169,13 +131,12 @@ namespace HyperTizen.Capture
                 {
                     Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] Library loaded: {libPath}");
 
-                    // Test for entry points (highest to lowest priority)
+                    // Only use the C++ singleton/vtable ABI reconstructed from
+                    // Samsung's reference implementation. The secvideo_api_* and
+                    // ppi_video_capture_* wrappers have different signatures.
                     string[] entryPoints = new string[]
                     {
-                        "secvideo_api_capture_screen_video_only",
-                        "secvideo_api_capture_screen",
-                        "ppi_video_capture_get_video_main_yuv",
-                        "ppi_video_capture_get_screen_post_yuv"
+                        "_ZN13IVideoCapture11getInstanceEv"
                     };
 
                     bool foundEntryPoint = false;
@@ -233,24 +194,13 @@ namespace HyperTizen.Capture
 
         public bool Test()
         {
+            _isInitialized = false;
+            _workingEntryPoint = null;
             Helper.Log.Write(Helper.eLogType.Info, "[T9VideoCaptureMethod] Running capture test...");
 
             try
             {
-                // Test all API variants systematically
-                bool success = false;
-
-                // Priority 1: secvideo_api_capture_screen_video_only (most direct for our use case)
-                if (!success) success = TestEntryPoint("secvideo_api_capture_screen_video_only", 1);
-
-                // Priority 2: secvideo_api_capture_screen
-                if (!success) success = TestEntryPoint("secvideo_api_capture_screen", 2);
-
-                // Priority 3: ppi_video_capture_get_video_main_yuv (with lock/unlock)
-                if (!success) success = TestEntryPoint("ppi_video_capture_get_video_main_yuv", 3);
-
-                // Priority 4: ppi_video_capture_get_screen_post_yuv (with lock/unlock)
-                if (!success) success = TestEntryPoint("ppi_video_capture_get_screen_post_yuv", 4);
+                bool success = TestEntryPoint("IVideoCapture::getVideoMainYUV", MainYuvVtableOffset);
 
                 if (success)
                 {
@@ -260,7 +210,8 @@ namespace HyperTizen.Capture
                 }
                 else
                 {
-                    Helper.Log.Write(Helper.eLogType.Error, "[T9VideoCaptureMethod] ✗ Test FAILED - all entry points failed");
+                    Helper.Log.Write(Helper.eLogType.Error,
+                        "[T9VideoCaptureMethod] ✗ Test FAILED - reference-matched getVideoMainYUV call failed validation");
                     return false;
                 }
             }
@@ -271,96 +222,70 @@ namespace HyperTizen.Capture
             }
         }
 
-        private bool TestEntryPoint(string entryPointName, int priority)
+        private bool TestEntryPoint(string entryPointName, int vtableOffset)
         {
-            Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] Testing entry point #{priority}: {entryPointName}");
+            Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] Testing reference-backed method: {entryPointName}");
 
             try
             {
-                // Allocate test buffers (small resolution for testing)
                 int testWidth = 1920;
                 int testHeight = 1080;
-                int ySize = testWidth * testHeight;
-                int uvSize = ySize / 2; // NV12 format
+                int bufferCapacity = GetNativeBufferCapacity(testWidth, testHeight);
 
-                IntPtr yBuffer = Marshal.AllocHGlobal(ySize);
-                IntPtr uvBuffer = Marshal.AllocHGlobal(uvSize);
+                IntPtr yBuffer = IntPtr.Zero;
+                IntPtr uvBuffer = IntPtr.Zero;
 
                 try
                 {
-                    // Initialize input parameters
-                    InputParams input = new InputParams
-                    {
-                        field0 = 0,
-                        field1 = 0,
-                        cropX = 0xffff,      // Full screen
-                        cropY = 0xffff,      // Full screen
-                        field4 = 1,
-                        yBufferSize = ySize,
-                        uvBufferSize = uvSize,
-                        pYBuffer = yBuffer,
-                        pUVBuffer = uvBuffer
-                    };
+                    yBuffer = Marshal.AllocHGlobal(bufferCapacity);
+                    uvBuffer = Marshal.AllocHGlobal(bufferCapacity);
+                    FillNativeBuffer(yBuffer, bufferCapacity);
+                    FillNativeBuffer(uvBuffer, bufferCapacity);
 
-                    OutputParams output = new OutputParams();
-
-                    int result = -999; // Default failure
-
-                    // Call appropriate entry point based on library version and name
-                    switch (entryPointName)
-                    {
-                        case "secvideo_api_capture_screen_video_only":
-                            result = CallSecvideoApiScreenVideoOnly(ref input, ref output);
-                            break;
-
-                        case "secvideo_api_capture_screen":
-                            result = CallSecvideoApiScreen(ref input, ref output);
-                            break;
-
-                        case "ppi_video_capture_get_video_main_yuv":
-                            ppi_video_capture_lock_global();
-                            result = ppi_video_capture_get_video_main_yuv(ref input, ref output);
-                            ppi_video_capture_unlock_global();
-                            break;
-
-                        case "ppi_video_capture_get_screen_post_yuv":
-                            ppi_video_capture_lock_global();
-                            result = ppi_video_capture_get_screen_post_yuv(ref input, ref output);
-                            ppi_video_capture_unlock_global();
-                            break;
-                    }
+                    InputParams input = CreateInputParams();
+                    OutputParams output = CreateOutputParams(yBuffer, uvBuffer, bufferCapacity);
+                    int result = CallVideoCapture(entryPointName, vtableOffset, ref input, ref output);
 
                     Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] {entryPointName} returned: {result}");
 
-                    // Check success (0 or 4 are success codes)
-                    bool isSuccess = (result == 0 || result == 4);
+                    if (result == 0 || result == 4)
+                    {
+                        if (TryGetFrameByteCounts(output, bufferCapacity, out int yByteCount, out int uvByteCount) &&
+                            output.pYData == yBuffer && output.pUVData == uvBuffer)
+                        {
+                            byte[] yData = new byte[yByteCount];
+                            byte[] uvData = new byte[uvByteCount];
+                            Marshal.Copy(yBuffer, yData, 0, yByteCount);
+                            Marshal.Copy(uvBuffer, uvData, 0, uvByteCount);
 
-                    if (isSuccess && output.width > 0 && output.height > 0)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Info, $"[T9VideoCaptureMethod] ✓ SUCCESS: {output.width}x{output.height}, Y size: {output.ySize}, UV size: {output.uvSize}");
-                        _workingEntryPoint = entryPointName;
-                        return true;
+                            if (BufferChangedFromSentinel(yData, BufferSentinel) &&
+                                BufferChangedFromSentinel(uvData, BufferSentinel))
+                            {
+                                Helper.Log.Write(Helper.eLogType.Info,
+                                    $"[T9VideoCaptureMethod] ✓ SUCCESS: {output.width}x{output.height}, " +
+                                    $"Y bytes: {yByteCount}, UV bytes: {uvByteCount}");
+                                _workingEntryPoint = entryPointName;
+                                return true;
+                            }
+                        }
                     }
-                    else if (result == -4)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, $"[T9VideoCaptureMethod] Error -4 (DRM protected content) - Try non-DRM source");
-                        return false; // DRM content - not a successful test
-                    }
-                    else if (result == -95)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, $"[T9VideoCaptureMethod] Error -95 (Operation not supported) - API blocked on this firmware");
-                        return false;
-                    }
-                    else
-                    {
-                        Helper.Log.Write(Helper.eLogType.Warning, $"[T9VideoCaptureMethod] {entryPointName} failed or returned invalid data");
-                        return false;
-                    }
+
+                    Helper.Log.Write(Helper.eLogType.Warning,
+                        $"[T9VideoCaptureMethod] {entryPointName} failed validation: result={result}, " +
+                        $"size={output.width}x{output.height}, buffers={output.ySize}/{output.uvSize}, " +
+                        $"pointersMatch={output.pYData == yBuffer && output.pUVData == uvBuffer}");
+                    return false;
                 }
                 finally
                 {
-                    Marshal.FreeHGlobal(yBuffer);
-                    Marshal.FreeHGlobal(uvBuffer);
+                    if (yBuffer != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(yBuffer);
+                    }
+                    if (uvBuffer != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(uvBuffer);
+                    }
                 }
             }
             catch (DllNotFoundException)
@@ -380,44 +305,149 @@ namespace HyperTizen.Capture
             }
         }
 
-        private int CallSecvideoApiScreenVideoOnly(ref InputParams input, ref OutputParams output)
+        private static InputParams CreateInputParams()
         {
-            // Try all three library versions
+            return new InputParams
+            {
+                cropX = 0xffff,
+                cropY = 0xffff,
+                field6 = 1
+            };
+        }
+
+        private static OutputParams CreateOutputParams(IntPtr yBuffer, IntPtr uvBuffer, int bufferCapacity)
+        {
+            return new OutputParams
+            {
+                ySize = bufferCapacity,
+                uvSize = bufferCapacity,
+                pYData = yBuffer,
+                pUVData = uvBuffer
+            };
+        }
+
+        private static int GetNativeBufferCapacity(int width, int height)
+        {
+            if (width <= 0 || height <= 0)
+            {
+                throw new ArgumentOutOfRangeException("width", "Capture dimensions must be positive");
+            }
+
+            long requestedSize = (long)width * height;
+            if (requestedSize > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException("width", "Capture buffer is too large");
+            }
+
+            return Math.Max((int)requestedSize, MinimumNativeBufferSize);
+        }
+
+        private static int CallVideoCapture(
+            string entryPointName,
+            int vtableOffset,
+            ref InputParams input,
+            ref OutputParams output)
+        {
+            IntPtr instance = IVideoCapture_getInstance();
+            if (instance == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("IVideoCapture::getInstance returned null");
+            }
+
+            IntPtr vtable = Marshal.ReadIntPtr(instance);
+            if (vtable == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("IVideoCapture instance has no vtable");
+            }
+
+            IntPtr captureAddress = Marshal.ReadIntPtr(vtable, vtableOffset);
+            IntPtr lockAddress = Marshal.ReadIntPtr(vtable, CaptureLockVtableOffset);
+            IntPtr unlockAddress = Marshal.ReadIntPtr(vtable, CaptureUnlockVtableOffset);
+            if (captureAddress == IntPtr.Zero || lockAddress == IntPtr.Zero || unlockAddress == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("IVideoCapture vtable is missing a required method");
+            }
+
+            CaptureMethodDelegate capture =
+                Marshal.GetDelegateForFunctionPointer<CaptureMethodDelegate>(captureAddress);
+            CaptureLockDelegate captureLock =
+                Marshal.GetDelegateForFunctionPointer<CaptureLockDelegate>(lockAddress);
+            CaptureLockDelegate captureUnlock =
+                Marshal.GetDelegateForFunctionPointer<CaptureLockDelegate>(unlockAddress);
+
+            Helper.Log.Write(Helper.eLogType.Debug,
+                $"[T9VideoCaptureMethod] Calling {entryPointName} through vtable offset 0x{vtableOffset:x}");
+
+            captureLock(instance, 1, 0);
             try
             {
-                return secvideo_api_capture_screen_video_only_0_1_0(ref input, ref output);
+                return capture(instance, ref input, ref output);
             }
-            catch
+            finally
             {
-                try
-                {
-                    return secvideo_api_capture_screen_video_only_0_1(ref input, ref output);
-                }
-                catch
-                {
-                    return secvideo_api_capture_screen_video_only(ref input, ref output);
-                }
+                captureUnlock(instance, 1, 0);
             }
         }
 
-        private int CallSecvideoApiScreen(ref InputParams input, ref OutputParams output)
+        private static bool TryGetFrameByteCounts(
+            OutputParams output,
+            int bufferCapacity,
+            out int yByteCount,
+            out int uvByteCount)
         {
-            // Try all three library versions
-            try
+            yByteCount = 0;
+            uvByteCount = 0;
+            if (output.width <= 0 || output.height <= 0 ||
+                output.ySize <= 0 || output.ySize > bufferCapacity ||
+                output.uvSize <= 0 || output.uvSize > bufferCapacity)
             {
-                return secvideo_api_capture_screen_0_1_0(ref input, ref output);
+                return false;
             }
-            catch
+
+            long ySize = (long)output.width * output.height;
+            long uvSize = ySize / 2;
+            if (ySize <= 0 || ySize > bufferCapacity || ySize > output.ySize ||
+                uvSize <= 0 || uvSize > bufferCapacity || uvSize > output.uvSize)
             {
-                try
+                return false;
+            }
+
+            yByteCount = (int)ySize;
+            uvByteCount = (int)uvSize;
+            return true;
+        }
+
+        private static void FillNativeBuffer(IntPtr buffer, int size)
+        {
+            int offset = 0;
+            while (offset < size)
+            {
+                int copySize = Math.Min(NativeBufferFillChunk.Length, size - offset);
+                Marshal.Copy(NativeBufferFillChunk, 0, IntPtr.Add(buffer, offset), copySize);
+                offset += copySize;
+            }
+        }
+
+        private static byte[] CreateNativeBufferFillChunk()
+        {
+            byte[] data = new byte[NativeBufferFillChunkSize];
+            for (int i = 0; i < data.Length; i++)
+            {
+                data[i] = BufferSentinel;
+            }
+            return data;
+        }
+
+        private static bool BufferChangedFromSentinel(byte[] buffer, byte sentinel)
+        {
+            for (int i = 0; i < buffer.Length; i++)
+            {
+                if (buffer[i] != sentinel)
                 {
-                    return secvideo_api_capture_screen_0_1(ref input, ref output);
-                }
-                catch
-                {
-                    return secvideo_api_capture_screen(ref input, ref output);
+                    return true;
                 }
             }
+            return false;
         }
 
         public CaptureResult Capture(int width, int height)
@@ -429,86 +459,60 @@ namespace HyperTizen.Capture
 
             try
             {
-                // Allocate buffers
-                int ySize = width * height;
-                int uvSize = ySize / 2; // NV12 format
+                int bufferCapacity = GetNativeBufferCapacity(width, height);
 
-                IntPtr yBuffer = Marshal.AllocHGlobal(ySize);
-                IntPtr uvBuffer = Marshal.AllocHGlobal(uvSize);
+                IntPtr yBuffer = IntPtr.Zero;
+                IntPtr uvBuffer = IntPtr.Zero;
 
                 try
                 {
-                    // Setup input parameters
-                    InputParams input = new InputParams
+                    yBuffer = Marshal.AllocHGlobal(bufferCapacity);
+                    uvBuffer = Marshal.AllocHGlobal(bufferCapacity);
+                    FillNativeBuffer(yBuffer, bufferCapacity);
+                    FillNativeBuffer(uvBuffer, bufferCapacity);
+
+                    InputParams input = CreateInputParams();
+                    OutputParams output = CreateOutputParams(yBuffer, uvBuffer, bufferCapacity);
+                    int result = CallVideoCapture(_workingEntryPoint, MainYuvVtableOffset, ref input, ref output);
+
+                    if ((result == 0 || result == 4) &&
+                        TryGetFrameByteCounts(output, bufferCapacity, out int yByteCount, out int uvByteCount) &&
+                        output.pYData == yBuffer && output.pUVData == uvBuffer)
                     {
-                        field0 = 0,
-                        field1 = 0,
-                        cropX = 0xffff,      // Full screen
-                        cropY = 0xffff,      // Full screen
-                        field4 = 1,
-                        yBufferSize = ySize,
-                        uvBufferSize = uvSize,
-                        pYBuffer = yBuffer,
-                        pUVBuffer = uvBuffer
-                    };
+                        byte[] yData = new byte[yByteCount];
+                        byte[] uvData = new byte[uvByteCount];
 
-                    OutputParams output = new OutputParams();
+                        Marshal.Copy(yBuffer, yData, 0, yByteCount);
+                        Marshal.Copy(uvBuffer, uvData, 0, uvByteCount);
 
-                    int result = -999;
-
-                    // Call the working entry point
-                    switch (_workingEntryPoint)
-                    {
-                        case "secvideo_api_capture_screen_video_only":
-                            result = CallSecvideoApiScreenVideoOnly(ref input, ref output);
-                            break;
-
-                        case "secvideo_api_capture_screen":
-                            result = CallSecvideoApiScreen(ref input, ref output);
-                            break;
-
-                        case "ppi_video_capture_get_video_main_yuv":
-                            ppi_video_capture_lock_global();
-                            result = ppi_video_capture_get_video_main_yuv(ref input, ref output);
-                            ppi_video_capture_unlock_global();
-                            break;
-
-                        case "ppi_video_capture_get_screen_post_yuv":
-                            ppi_video_capture_lock_global();
-                            result = ppi_video_capture_get_screen_post_yuv(ref input, ref output);
-                            ppi_video_capture_unlock_global();
-                            break;
-                    }
-
-                    // Check success
-                    if ((result == 0 || result == 4) && output.width > 0 && output.height > 0)
-                    {
-                        // Copy data to managed arrays
-                        byte[] yData = new byte[output.ySize];
-                        byte[] uvData = new byte[output.uvSize];
-
-                        Marshal.Copy(output.pYData, yData, 0, output.ySize);
-                        Marshal.Copy(output.pUVData, uvData, 0, output.uvSize);
+                        if (!BufferChangedFromSentinel(yData, BufferSentinel) ||
+                            !BufferChangedFromSentinel(uvData, BufferSentinel))
+                        {
+                            return CaptureResult.CreateFailure(
+                                "Capture returned success but one or both output planes were unchanged");
+                        }
 
                         return CaptureResult.CreateSuccess(yData, uvData, output.width, output.height);
                     }
-                    else if (result == -4)
-                    {
-                        return CaptureResult.CreateFailure("DRM protected content - cannot capture");
-                    }
-                    else if (result == -95)
-                    {
-                        return CaptureResult.CreateFailure("Operation not supported (firmware block)");
-                    }
                     else
                     {
-                        return CaptureResult.CreateFailure($"Capture failed with code: {result}");
+                        Helper.Log.Write(Helper.eLogType.Warning,
+                            $"[T9VideoCaptureMethod] Capture validation failed: result={result}, " +
+                            $"size={output.width}x{output.height}, buffers={output.ySize}/{output.uvSize}, " +
+                            $"pointersMatch={output.pYData == yBuffer && output.pUVData == uvBuffer}");
+                        return CaptureResult.CreateFailure($"Capture failed validation (native result {result})");
                     }
                 }
                 finally
                 {
-                    Marshal.FreeHGlobal(yBuffer);
-                    Marshal.FreeHGlobal(uvBuffer);
+                    if (yBuffer != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(yBuffer);
+                    }
+                    if (uvBuffer != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(uvBuffer);
+                    }
                 }
             }
             catch (Exception ex)

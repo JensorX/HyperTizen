@@ -666,12 +666,32 @@ namespace HyperTizen.Capture
                 {
                     if (!positionSet[slot])
                     {
+                        int skippedPointIndex = pointIndexes[slot];
+                        Helper.Log.Write(Helper.eLogType.Debug,
+                            $"PixelSampling: Skipping pixel read for slot={slot}, point={skippedPointIndex}, " +
+                            $"positionResult={positionResults[slot]}");
                         continue;
                     }
 
                     int pointIndex = pointIndexes[slot];
                     Color sample;
-                    int result = CallMeasurePixel(slot, out sample);
+                    sampleDetails[pointIndex] =
+                        $"position={positionResults[slot]}; pixel=read entered (slot={slot})";
+                    int result;
+                    try
+                    {
+                        result = CallMeasurePixel(slot, out sample);
+                    }
+                    catch (Exception ex)
+                    {
+                        _pixelErrorsSinceLog++;
+                        _anchorErrorCounts[pointIndex]++;
+                        sampleDetails[pointIndex] =
+                            $"position={positionResults[slot]}; pixel=exception({ex.GetType().Name})";
+                        DiscardPendingSample(pointIndex);
+                        continue;
+                    }
+
                     if (result < 0)
                     {
                         _pixelErrorsSinceLog++;
@@ -752,7 +772,15 @@ namespace HyperTizen.Capture
             }
 
             LogSamplingErrorSummary(now);
-            LogSampleSummary(now, captureStarted, rawSamples, colorData, freshSamples, estimatedSamples, hasUsableSamples);
+            LogSampleSummary(
+                now,
+                captureStarted,
+                rawSamples,
+                colorData,
+                freshSamples,
+                estimatedSamples,
+                sampleDetails,
+                hasUsableSamples);
             return colorData;
         }
 
@@ -959,6 +987,7 @@ namespace HyperTizen.Capture
             Color[] outputColors,
             bool[] freshSamples,
             bool[] estimatedSamples,
+            string[] sampleDetails,
             bool hasUsableSamples)
         {
             if (!hasUsableSamples)
@@ -982,6 +1011,8 @@ namespace HyperTizen.Capture
                 $"R={FormatColor(outputColors[1], true, estimatedSamples[1])} " +
                 $"B={FormatColor(outputColors[2], true, estimatedSamples[2])} " +
                 $"L={FormatColor(outputColors[3], true, estimatedSamples[3])}; " +
+                $"sampleStatus T={sampleDetails[0]} R={sampleDetails[1]} " +
+                $"B={sampleDetails[2]} L={sampleDetails[3]}; " +
                 $"slots={_condition.ScreenCapturePoints}, sampling={samplingMilliseconds:F1}ms, " +
                 $"estimated={CountEstimatedSamples(estimatedSamples)}, " +
                 $"abruptCandidates={_abruptCandidatesSinceSummary}");

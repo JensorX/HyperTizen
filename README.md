@@ -30,10 +30,10 @@ This fork is focused on implementing screen capture functionality for **Tizen 8.
 - Brief native read errors reuse a recent valid sample; abrupt color changes are briefly confirmed to suppress one-frame spikes. These filters and the four-edge mapping still need real-TV validation.
 - Recent (up to 250ms) valid edge samples are reused through transient errors. If at least two anchors remain reliable, missing edges are estimated from the nearest reliable perimeter anchor; capture fails with per-edge operation/result details if fewer than two remain.
 - Abrupt color changes are briefly confirmed to suppress one-frame spikes. The filters and four-edge mapping still need real-TV validation.
-- Periodic diagnostics include capture timing, per-edge sample-error summaries, per-anchor position/read status, and the `estimated=` anchor count.
+- Periodic diagnostics include capture timing, per-edge sample-error summaries, per-anchor position/read status, and the `estimated=` anchor count. The new failure summary emits even when no usable frame is captured and includes the native read return or exception; deploy the build tagged `Read diagnostics v1` to collect it.
 - 10-bit RGB is converted to NV12/FlatBuffers. Color range and the existing BT.2020 matrix remain uncalibrated against HyperHDR.
 
-**T9 capture status (S90C/Tizen 9):** Earlier TV logs from the previous probes showed T9 Video results including `-1`/`-6` and T9 Display `-2`; those values have not been assigned verified meanings. The current T9 Video source now tries only the Samsung-reference `IVideoCapture::getVideoMainYUV` path, but that source has not been retested on the TV, and its output format still needs hardware validation. T9 Display capture is intentionally skipped until its complete native ABI, request layout, and required metadata are established. Pixel Sampling remains the only method confirmed selected by the supplied TV log.
+**Latest S90C/Tizen 9 run:** The reference-backed `IVideoCapture::getVideoMainYUV` call returned `-1` with output dimensions `0x0`; its meaning is unknown. T9 Display was intentionally skipped. Pixel Sampling found `ppi_ve_*`, passed the condition test, and position calls returned `0`, but the first real capture failed because fewer than two edge samples were accepted. Three reads remained at `pixel=read entered` with zero recorded errors, so the native read outcome is still unresolved. TCP registration with FlatBuffers succeeded, but no frame was sent after that failed capture. Deploy the build tagged `Read diagnostics v1` and inspect its `API=...` and `sampleStatus` fields before changing the native call or sample mapping.
 
 **Capture Architecture:** `CaptureMethodSelector` tries T9 Video → T9 Display → T8 SDK → T7 SDK → Pixel Sampling. T9 Display currently reports unavailable without making a native call.
 
@@ -155,11 +155,11 @@ The control panel is perfect for:
 ### Known Issues & Testing Needed
 
 **T9 Capture Methods:**
-- ⚠️ **T9 Video source is unverified on hardware:** Dispatch offsets, lock/unlock calls, and parameter layouts follow `references/GetCaptureFromTZ.c`; the new source has not been deployed to the S90C. Confirm returned dimensions, plane sizes/format, and actual frame data before treating it as working.
+- ⚠️ **T9 Video still fails on hardware:** The latest reference-backed `getVideoMainYUV` test returned `-1`, with `0x0` dimensions. Its meaning remains unknown; do not label it DRM or unsupported without evidence.
 - **T9 Display is fail-closed:** Its native wrapper consumes arguments not represented by the old P/Invoke, and the full request structure/metadata are not known. The method is disabled rather than calling an unverified ABI. The previous `-2` result is from an older build.
 
 **Pixel Sampling Method:**
-- ⚠️ **Hardware validation pending:** The two-slot overwrite bug is fixed in code, but the updated build has not yet been tested on the S90C.
+- ⚠️ **First-frame read outcome unresolved:** The latest log reports three anchors reaching `pixel=read entered` and then fewer than two reliable samples with zero errors. This is inconsistent with the current result/exception bookkeeping. The source now logs a `Read diagnostics v1` summary, even for wholly unusable frames; rebuild/redeploy and inspect `API=...` and `sampleStatus` before changing the P/Invoke ABI.
 - **Spatial detail:** One anchor per edge cannot reproduce gradients or multiple colors along the same edge.
 - **Dark scenes/flicker:** Test near-black video and true black separately. No brightness floor is applied, so genuine black remains black; verify raw RGB10 and filtered values in the logs.
 - **Output image:** Pixel Sampling still creates a 64×48 image with narrow colored edge bands and a black center. Check HyperHDR's source/LED preview if output remains dim; do not change the color range or BT.2020 matrix without testing.
@@ -187,7 +187,7 @@ To test the pixel sampling capture method on the S90C/Tizen 9:
 - **VideoEnhance Library**: `libvideoenhance.so` provides pixel sampling API that works on Tizen 6, 7, and 8+
 - **VideoEnhance Library**: the S90C log confirms the Tizen 9 `ppi_ve_*` endpoints and condition query; actual colors and quality still require on-TV validation for each firmware.
 - **Alternative Methods**: VTable-based frame capture (T8SDK) and legacy APIs (T7SDK) require further research
-- **Tizen 9 methods:** The supplied S90C results (`-1`/`-6` for earlier T9 Video probes and `-2` for T9 Display) are historical and unexplained. The current T9 Video candidate has not been retested; T9 Display is disabled pending a verified ABI.
+- **Tizen 9 methods:** The latest S90C run of the reference-backed T9 Video call returned `-1` with `0x0` dimensions; earlier probes also returned `-6`. These codes are unexplained. T9 Display is disabled pending a verified ABI. Pixel Sampling was selected, but its first real frame did not have two reliable edge samples.
 - **Tizen 8/7 methods:** SDK/VTable methods remain unavailable or unimplemented on the tested device.
 - **Framework Differences**: Tizen 8.0+ has architectural changes that affect some capture capabilities
 

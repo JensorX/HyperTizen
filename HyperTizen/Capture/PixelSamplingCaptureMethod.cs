@@ -59,6 +59,7 @@ namespace HyperTizen.Capture
 
         private long _lastSamplingErrorLogTimestamp;
         private long _lastSampleSummaryTimestamp;
+        private long _lastUnavailableSampleSummaryTimestamp;
         private int _positionErrorsSinceLog;
         private int _pixelErrorsSinceLog;
         private int _invalidSamplesSinceLog;
@@ -687,10 +688,14 @@ namespace HyperTizen.Capture
                         _pixelErrorsSinceLog++;
                         _anchorErrorCounts[pointIndex]++;
                         sampleDetails[pointIndex] =
-                            $"position={positionResults[slot]}; pixel=exception({ex.GetType().Name})";
+                            $"position={positionResults[slot]}; pixel=exception({ex.GetType().Name}: {ex.Message})";
                         DiscardPendingSample(pointIndex);
                         continue;
                     }
+
+                    sampleDetails[pointIndex] =
+                        $"position={positionResults[slot]}; pixel={result}; " +
+                        $"RGB10=({sample.R},{sample.G},{sample.B}); slot={slot}";
 
                     if (result < 0)
                     {
@@ -778,6 +783,7 @@ namespace HyperTizen.Capture
                 rawSamples,
                 colorData,
                 freshSamples,
+                reliableSamples,
                 estimatedSamples,
                 sampleDetails,
                 hasUsableSamples);
@@ -986,38 +992,45 @@ namespace HyperTizen.Capture
             Color[] rawSamples,
             Color[] outputColors,
             bool[] freshSamples,
+            bool[] reliableSamples,
             bool[] estimatedSamples,
             string[] sampleDetails,
             bool hasUsableSamples)
         {
-            if (!hasUsableSamples)
-            {
-                return;
-            }
-
             long intervalTicks = Stopwatch.Frequency * SamplingErrorLogIntervalMs / 1000;
-            if (_lastSampleSummaryTimestamp != 0 && now - _lastSampleSummaryTimestamp < intervalTicks)
+            long lastSummaryTimestamp = hasUsableSamples
+                ? _lastSampleSummaryTimestamp
+                : _lastUnavailableSampleSummaryTimestamp;
+            if (lastSummaryTimestamp != 0 && now - lastSummaryTimestamp < intervalTicks)
             {
                 return;
             }
 
             double samplingMilliseconds = (now - captureStarted) * 1000.0 / Stopwatch.Frequency;
             Helper.Log.Write(Helper.eLogType.Debug,
-                $"PixelSampling: RGB10 raw T={FormatColor(rawSamples[0], freshSamples[0])} " +
+                $"PixelSampling: Read diagnostics v1; API={_workingVariant}/{_workingLibPath}, " +
+                $"usable={hasUsableSamples}; RGB10 raw T={FormatColor(rawSamples[0], freshSamples[0])} " +
                 $"R={FormatColor(rawSamples[1], freshSamples[1])} " +
                 $"B={FormatColor(rawSamples[2], freshSamples[2])} " +
                 $"L={FormatColor(rawSamples[3], freshSamples[3])}; " +
-                $"filtered T={FormatColor(outputColors[0], true, estimatedSamples[0])} " +
-                $"R={FormatColor(outputColors[1], true, estimatedSamples[1])} " +
-                $"B={FormatColor(outputColors[2], true, estimatedSamples[2])} " +
-                $"L={FormatColor(outputColors[3], true, estimatedSamples[3])}; " +
+                $"filtered T={FormatColor(outputColors[0], reliableSamples[0], estimatedSamples[0])} " +
+                $"R={FormatColor(outputColors[1], reliableSamples[1], estimatedSamples[1])} " +
+                $"B={FormatColor(outputColors[2], reliableSamples[2], estimatedSamples[2])} " +
+                $"L={FormatColor(outputColors[3], reliableSamples[3], estimatedSamples[3])}; " +
                 $"sampleStatus T={sampleDetails[0]} R={sampleDetails[1]} " +
                 $"B={sampleDetails[2]} L={sampleDetails[3]}; " +
                 $"slots={_condition.ScreenCapturePoints}, sampling={samplingMilliseconds:F1}ms, " +
                 $"estimated={CountEstimatedSamples(estimatedSamples)}, " +
                 $"abruptCandidates={_abruptCandidatesSinceSummary}");
 
-            _lastSampleSummaryTimestamp = now;
+            if (hasUsableSamples)
+            {
+                _lastSampleSummaryTimestamp = now;
+            }
+            else
+            {
+                _lastUnavailableSampleSummaryTimestamp = now;
+            }
             _abruptCandidatesSinceSummary = 0;
         }
 
@@ -1389,6 +1402,7 @@ namespace HyperTizen.Capture
             Array.Clear(_anchorErrorCounts, 0, _anchorErrorCounts.Length);
             _lastSamplingErrorLogTimestamp = 0;
             _lastSampleSummaryTimestamp = 0;
+            _lastUnavailableSampleSummaryTimestamp = 0;
             _positionErrorsSinceLog = 0;
             _pixelErrorsSinceLog = 0;
             _invalidSamplesSinceLog = 0;

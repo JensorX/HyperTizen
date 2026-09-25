@@ -11,11 +11,11 @@ This document provides essential guidance for Claude or other LLMs working with 
 HyperTizen is an experimental fork of a Hyperion/HyperHDR screen capturer for Samsung Tizen TVs, focused on **Tizen 8.0+ screen capture research**.
 
 **Current Status:**
-- **T9 Video Capture** = source now uses the reference-backed `IVideoCapture::getVideoMainYUV` vtable path; this source has not been retested on the S90C. Earlier probe results included `-1` and `-6`.
+- **T9 Video Capture** = latest S90C run of the reference-backed `IVideoCapture::getVideoMainYUV` path returned `-1` with `0x0` dimensions; meaning is unknown. Earlier probes also included `-6`.
 - **T9 Display Capture** = intentionally skipped until the native wrapper ABI, request layout, and required metadata are verified. The previous TV build returned `-2`.
 - **T8/T7 SDK Capture Methods** = scaffolding exists; not selected on the tested device
-- **Pixel Sampling** = selected on the S90C/Tizen 9 via `ppi_ve_*`; code now uses four edge anchors and correctly reads each batch before reusing the two native slots. The updated build still requires hardware retesting.
-- **Pixel Sampling** = selected on the S90C/Tizen 9 via `ppi_ve_*`; code uses four edge anchors and reads each two-slot batch before reusing the slots. It holds valid samples for up to 250ms and estimates missing edges from the nearest reliable edge when at least two anchors remain; fewer than two returns per-edge native error details. The updated build still requires hardware retesting.
+- **Pixel Sampling** = latest S90C run found `ppi_ve_*`, passed the condition test, and position calls returned `0`, but the first capture failed with fewer than two reliable anchors. Three reads remained logged as `pixel=read entered` with zero errors, inconsistent with current source bookkeeping; deploy the build tagged `Read diagnostics v1` before changing the native ABI.
+- **Pixel Sampling** = code samples four edge anchors, reading each two-slot batch before slot reuse; it holds recent samples up to 250ms and estimates missing edges only when at least two anchors remain. Hardware retest is required.
 
 **Critical Constraint:** Always verify methods on actual TV hardware - emulator testing is not reliable. Different Tizen firmware versions may have different API availability.
 
@@ -66,7 +66,7 @@ Five Capture Methods (Priority Order):
 1. T9VideoCaptureMethod
    ├─ libvideo-capture.so.0.1.0
    ├─ IVideoCapture::getInstance() and reference-backed getVideoMainYUV vtable call
-   ├─ Lock/unlock and parameter layouts follow GetCaptureFromTZ.c; source retest is pending
+   ├─ Lock/unlock and parameter layouts follow GetCaptureFromTZ.c; latest TV call returned -1 with 0x0 dimensions
    └─ See: HyperTizen/Capture/T9VideoCaptureMethod.cs
 
 2. T9DisplayCaptureMethod

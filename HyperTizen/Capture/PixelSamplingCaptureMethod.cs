@@ -607,7 +607,11 @@ namespace HyperTizen.Capture
             Color[] colorData = new Color[_capturedPoints.Length];
             Color[] rawSamples = new Color[_capturedPoints.Length];
             bool[] estimatedSamples = new bool[_capturedPoints.Length];
-            string[] sampleErrors = new string[_capturedPoints.Length];
+            string[] sampleDetails = new string[_capturedPoints.Length];
+            for (int pointIndex = 0; pointIndex < sampleDetails.Length; pointIndex++)
+            {
+                sampleDetails[pointIndex] = "not attempted this capture";
+            }
 
             if (!IsConditionValid() || _pixelCoordinates == null || _pixelCoordinates.Length != _capturedPoints.Length)
             {
@@ -618,6 +622,7 @@ namespace HyperTizen.Capture
             int slotCount = Math.Min(_condition.ScreenCapturePoints, _capturedPoints.Length);
             bool[] freshSamples = new bool[_capturedPoints.Length];
             int[] pointIndexes = new int[slotCount];
+            int[] positionResults = new int[slotCount];
             bool[] positionSet = new bool[slotCount];
             int batchStart = 0;
 
@@ -636,16 +641,18 @@ namespace HyperTizen.Capture
 
                     PixelCoordinate coordinate = _pixelCoordinates[pointIndex];
                     int result = CallMeasurePosition(slot, coordinate.X, coordinate.Y);
+                    positionResults[slot] = result;
                     if (result >= 0)
                     {
                         positionSet[slot] = true;
                         hasPositionToRead = true;
+                        sampleDetails[pointIndex] = $"position={result}; pixel=not read";
                     }
                     else
                     {
                         _positionErrorsSinceLog++;
                         _anchorErrorCounts[pointIndex]++;
-                        sampleErrors[pointIndex] = $"position={result}";
+                        sampleDetails[pointIndex] = $"position={result}";
                         DiscardPendingSample(pointIndex);
                     }
                 }
@@ -669,7 +676,7 @@ namespace HyperTizen.Capture
                     {
                         _pixelErrorsSinceLog++;
                         _anchorErrorCounts[pointIndex]++;
-                        sampleErrors[pointIndex] = $"pixel={result}";
+                        sampleDetails[pointIndex] = $"position={positionResults[slot]}; pixel={result}";
                         DiscardPendingSample(pointIndex);
                         continue;
                     }
@@ -680,7 +687,8 @@ namespace HyperTizen.Capture
                     {
                         _invalidSamplesSinceLog++;
                         _anchorErrorCounts[pointIndex]++;
-                        sampleErrors[pointIndex] = $"invalidRGB10=({sample.R},{sample.G},{sample.B})";
+                        sampleDetails[pointIndex] =
+                            $"position={positionResults[slot]}; pixel={result}; invalidRGB10=({sample.R},{sample.G},{sample.B})";
                         DiscardPendingSample(pointIndex);
                         continue;
                     }
@@ -690,6 +698,8 @@ namespace HyperTizen.Capture
                     rawSamples[pointIndex] = sample;
                     colorData[pointIndex] = FilterSample(pointIndex, sample);
                     freshSamples[pointIndex] = true;
+                    sampleDetails[pointIndex] =
+                        $"position={positionResults[slot]}; pixel={result}; RGB10=({sample.R},{sample.G},{sample.B})";
                 }
 
                 batchStart += currentBatchSize;
@@ -738,7 +748,7 @@ namespace HyperTizen.Capture
             }
             else
             {
-                unavailableReason = BuildUnavailableReason(reliableSamples, sampleErrors);
+                unavailableReason = BuildUnavailableReason(reliableSamples, sampleDetails, now);
             }
 
             LogSamplingErrorSummary(now);
@@ -766,7 +776,7 @@ namespace HyperTizen.Capture
             throw new InvalidOperationException("PixelSampling: No reliable anchor available for fallback");
         }
 
-        private string BuildUnavailableReason(bool[] reliableSamples, string[] sampleErrors)
+        private string BuildUnavailableReason(bool[] reliableSamples, string[] sampleDetails, long now)
         {
             string[] edgeNames = new string[] { "top", "right", "bottom", "left" };
             System.Text.StringBuilder reason = new System.Text.StringBuilder("fewer than two reliable edge anchors; unavailable=");
@@ -786,7 +796,21 @@ namespace HyperTizen.Capture
 
                 reason.Append(edgeNames[pointIndex]);
                 reason.Append('(');
-                reason.Append(sampleErrors[pointIndex] ?? "no recent successful sample");
+                reason.Append("no recent successful sample; current=");
+                reason.Append(sampleDetails[pointIndex] ?? "unknown");
+                reason.Append("; lastSuccessAge=");
+                long lastSuccessTimestamp = _lastSuccessfulSampleTimestamps[pointIndex];
+                if (lastSuccessTimestamp == 0)
+                {
+                    reason.Append("never");
+                }
+                else
+                {
+                    double ageMilliseconds = (now - lastSuccessTimestamp) * 1000.0 / Stopwatch.Frequency;
+                    reason.Append(ageMilliseconds.ToString("F0"));
+                    reason.Append("ms");
+                }
+
                 reason.Append(", errorsSinceLastSummary=");
                 reason.Append(_anchorErrorCounts[pointIndex]);
                 reason.Append(")");

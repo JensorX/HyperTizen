@@ -49,7 +49,6 @@ namespace HyperTizen.Capture
         // then top/bottom. This preserves the most important spatial contrast.
         private static readonly int[] SamplingOrder = new int[] { 1, 3, 0, 2 };
 
-        private Color[] _lastFilteredColors = new Color[4];
         private Color[] _lastFilteredColors = new Color[EdgeAnchorCount];
         private bool[] _hasFilteredColors = new bool[EdgeAnchorCount];
         private Color[] _pendingColors = new Color[EdgeAnchorCount];

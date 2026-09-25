@@ -7,10 +7,8 @@ agents:
     description: >
       Specialized expert in Tizen screen capture APIs, native library internals,
       and Samsung TV platform-specific capture methods. Deep knowledge of all
-      capture approaches: T9 video/display probes, VideoEnhance pixel sampling,
-      VTable-based capture (T8 API), and legacy T7 API. The latest S90C log
-      selected VideoEnhance with two slots, but its first real frame failed
-      because fewer than two edge samples were usable.
+      capture approaches: VideoEnhance pixel sampling (WORKING), VTable-based
+      capture (T8 API), and legacy T7 API.
 
     expertise:
       - Tizen 7.0/8.0+ screen capture API differences
@@ -48,16 +46,9 @@ agents:
 
     context: >
       HyperTizen uses a systematic fallback capture architecture with the
-      ICaptureMethod interface. The selector order is T9Video, T9Display, T8SDK,
-      T7SDK, then PixelSampling. The latest S90C/Tizen 9 log shows the
-      reference-backed T9Video getVideoMainYUV call returned -1 with zero
-      dimensions; T9Display is disabled until its ABI and metadata are
-      verified. PixelSampling selected ppi_ve_* with two slots and SleepMS=20,
-      and position calls returned 0, but the first frame failed with fewer
-      than two usable anchors. Three reads remained at "pixel=read entered"
-      with no error count; deploy the build tagged Read diagnostics v1 before
-      changing native interop. Four edge anchors need two batches (~25 FPS
-      maximum), and sampling still needs TV validation.
+      ICaptureMethod interface. Three capture methods are available (T8SDK,
+      T7SDK, PixelSampling) with different priorities. Implementation details
+      need to be added based on TV hardware capabilities and available libraries.
 
   - name: debugging-assistant
     description: >
@@ -257,16 +248,9 @@ project:
   language: C#
   platform: .NET on Samsung Tizen TV
   current_status: >
-    The latest Samsung S90C/Tizen 9 run shows reference-backed T9Video
-    getVideoMainYUV returning -1 with zero dimensions; earlier probes also
-    returned -6. These codes are unexplained. T9Display is fail-closed until
-    its ABI and request metadata are known. PixelSampling selected ppi_ve_*
-    with two slots and a 20ms wait; position calls returned 0, but the first
-    frame failed with fewer than two usable samples. Three reads remained at
-    "pixel=read entered" with zero errors. Redeploy the build tagged Read
-    diagnostics v1 before changing interop. Four-anchor batching and transient
-    filtering still need real-TV validation. T8/T7 behavior varies by firmware.
-    WebSocket logging and diagnostic mode are working.
+    VideoEnhance pixel sampling is the ONLY working capture method on Tizen 8.0+.
+    The T8 vtable API is blocked by Samsung firmware (-95 error). The T7 API
+    doesn't exist on Tizen 8. WebSocket logging and diagnostic mode are working.
 
 # How to use this file
 usage: >

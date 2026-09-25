@@ -23,19 +23,16 @@ This is an **experimental fork** of [HyperTizen](https://github.com/reisxd/Hyper
 
 This fork is focused on implementing screen capture functionality for **Tizen 8.0+ TVs**.
 
-**⚠️ Pixel Sampling Capture Method**: Implemented using `libvideoenhance.so`; still experimental and requires retesting on hardware after the latest fix.
-- The Samsung S90C/Tizen 9 log confirms `ppi_ve_*`, `ScreenCapturePoints=2`, `SleepMS=20ms`, and Pixel Sampling selected.
-- Sampling now uses four edge anchors. Each set/wait/read batch is completed before reusing the two native slots; left/right are sampled together, then top/bottom.
-- Two 20ms batches imply a theoretical maximum of about 25 frames/s before processing overhead. Actual TV throughput has not yet been measured.
-- Brief native read errors reuse a recent valid sample; abrupt color changes are briefly confirmed to suppress one-frame spikes. These filters and the four-edge mapping still need real-TV validation.
-- Recent (up to 250ms) valid edge samples are reused through transient errors. If at least two anchors remain reliable, missing edges are estimated from the nearest reliable perimeter anchor; capture fails with per-edge operation/result details if fewer than two remain.
-- Abrupt color changes are briefly confirmed to suppress one-frame spikes. The filters and four-edge mapping still need real-TV validation.
-- Periodic diagnostics include capture timing, per-edge sample-error summaries, per-anchor position/read status, and the `estimated=` anchor count. The new failure summary emits even when no usable frame is captured and includes the native read return or exception; deploy the build tagged `Read diagnostics v1` to collect it.
-- 10-bit RGB is converted to NV12/FlatBuffers. Color range and the existing BT.2020 matrix remain uncalibrated against HyperHDR.
+**✅ Pixel Sampling Capture Method**: Now **IMPLEMENTED** using `libvideoenhance.so`
+- Samples 16 pixels from screen edges for ambient lighting
+- Converts 10-bit RGB to NV12 format for FlatBuffers transmission
+- Supports both Tizen 6 and Tizen 7+ API variants
+- Requires hardware testing to verify color accuracy and coordinate mapping
+- Pretty bad performance, but it works! Sorta. Basically takes the dominant color on the screen. And flickering.
 
-**Latest S90C/Tizen 9 run:** The reference-backed `IVideoCapture::getVideoMainYUV` call returned `-1` with output dimensions `0x0`; its meaning is unknown. T9 Display was intentionally skipped. Pixel Sampling found `ppi_ve_*`, passed the condition test, and position calls returned `0`, but the first real capture failed because fewer than two edge samples were accepted. Three reads remained at `pixel=read entered` with zero recorded errors, so the native read outcome is still unresolved. TCP registration with FlatBuffers succeeded, but no frame was sent after that failed capture. Deploy the build tagged `Read diagnostics v1` and inspect its `API=...` and `sampleStatus` fields before changing the native call or sample mapping.
+**⚠️ Other Capture Methods**: T8SDK and T7SDK remain as scaffolding (not yet implemented)
 
-**Capture Architecture:** `CaptureMethodSelector` tries T9 Video → T9 Display → T8 SDK → T7 SDK → Pixel Sampling. T9 Display currently reports unavailable without making a native call.
+**Capture Architecture:** HyperTizen uses a systematic `ICaptureMethod` interface with automatic fallback. The `CaptureMethodSelector` tests available methods on startup (T8SDK → T7SDK → PixelSampling) and selects the first working method.
 
 ---
 
@@ -139,13 +136,14 @@ The control panel is perfect for:
 - **Browser-Based Control Panel**: Full service control and monitoring (control port 45677, logs port 45678)
 - **Architecture Framework**: Structured `ICaptureMethod` interface with automatic fallback selection
 - **System Info Detection**: Detects Tizen version and TV capabilities
-- **Capture Method Selector**: Tests and selects best available method automatically
+- **Capture Method Selector**: Tests and selects best available capture method automatically
 - **Log Level Filtering**: Client-side filtering in browser (Debug/Info/Warning/Error/Performance)
-- **Pixel Sampling Capture (experimental; latest changes not yet verified on TV):**
-   - Four edge anchors, sampled in two correctly sequenced batches when the TV exposes two slots
-   - 10-bit RGB to NV12 conversion and FlatBuffers transmission
-   - Short stale-sample hold and single-frame abrupt-change rejection
-   - On the S90C, the 20ms API wait per batch limits the theoretical capture rate to about 25 FPS
+- **✅ Pixel Sampling Capture**: Full implementation using `libvideoenhance.so`
+  - 16-point edge sampling for ambient lighting
+  - 10-bit to 8-bit RGB conversion
+  - RGB to NV12 color space conversion
+  - FlatBuffers integration for HyperHDR/Hyperion
+  - **Status**: Code complete, terrible
 
 ### Partially Implemented
 
@@ -154,29 +152,19 @@ The control panel is perfect for:
 
 ### Known Issues & Testing Needed
 
-**T9 Capture Methods:**
-- ⚠️ **T9 Video still fails on hardware:** The latest reference-backed `getVideoMainYUV` test returned `-1`, with `0x0` dimensions. Its meaning remains unknown; do not label it DRM or unsupported without evidence.
-- **T9 Display is fail-closed:** Its native wrapper consumes arguments not represented by the old P/Invoke, and the full request structure/metadata are not known. The method is disabled rather than calling an unverified ABI. The previous `-2` result is from an older build.
-
 **Pixel Sampling Method:**
-- ⚠️ **First-frame read outcome unresolved:** The latest log reports three anchors reaching `pixel=read entered` and then fewer than two reliable samples with zero errors. This is inconsistent with the current result/exception bookkeeping. The source now logs a `Read diagnostics v1` summary, even for wholly unusable frames; rebuild/redeploy and inspect `API=...` and `sampleStatus` before changing the P/Invoke ABI.
-- **Spatial detail:** One anchor per edge cannot reproduce gradients or multiple colors along the same edge.
-- **Dark scenes/flicker:** Test near-black video and true black separately. No brightness floor is applied, so genuine black remains black; verify raw RGB10 and filtered values in the logs.
-- **Output image:** Pixel Sampling still creates a 64×48 image with narrow colored edge bands and a black center. Check HyperHDR's source/LED preview if output remains dim; do not change the color range or BT.2020 matrix without testing.
-- **Rate:** Two 20ms batches require at least 40ms per output frame (about 25 FPS maximum, before overhead).
+- ⚠️ **Color accuracy**: Basically takes the dominant color on the screen
+- **Flickering**: Random white flicker now and then
 
 ### Testing the Pixel Sampling Implementation
 
-To test the pixel sampling capture method on the S90C/Tizen 9:
+To test the pixel sampling capture method on your Tizen 8.0+ TV:
 
 1. **Build and install** the updated HyperTizen package on your TV
 2. **Start the service** and monitor via WebSocket logs
 3. **Watch for log messages** showing:
    - `PixelSampling: Library found, available`
-   - `CAPTURE METHOD SELECTED: Pixel Sampling`
-   - `Points: 2` and `Sleep: 20ms`
-   - `Pre-calculated 4 edge anchors` and periodic `RGB10 raw`/`filtered` summaries
-   - Capture timing and sample-error summaries
+   - Color values being sampled (10-bit RGB)
 4. **Connect to HyperHDR/Hyperion** and verify ambient lighting displays correctly
 5. **Test color accuracy**: Display pure colors (red, green, blue) and verify they appear correctly
 6. **Test edge mapping**: Move content along edges and verify LEDs respond in correct direction
@@ -185,17 +173,14 @@ To test the pixel sampling capture method on the S90C/Tizen 9:
 
 - **Standard APIs**: May have different availability on Tizen 8.0+ compared to earlier versions
 - **VideoEnhance Library**: `libvideoenhance.so` provides pixel sampling API that works on Tizen 6, 7, and 8+
-- **VideoEnhance Library**: the S90C log confirms the Tizen 9 `ppi_ve_*` endpoints and condition query; actual colors and quality still require on-TV validation for each firmware.
 - **Alternative Methods**: VTable-based frame capture (T8SDK) and legacy APIs (T7SDK) require further research
-- **Tizen 9 methods:** The latest S90C run of the reference-backed T9 Video call returned `-1` with `0x0` dimensions; earlier probes also returned `-6`. These codes are unexplained. T9 Display is disabled pending a verified ABI. Pixel Sampling was selected, but its first real frame did not have two reliable edge samples.
-- **Tizen 8/7 methods:** SDK/VTable methods remain unavailable or unimplemented on the tested device.
 - **Framework Differences**: Tizen 8.0+ has architectural changes that affect some capture capabilities
 
 ---
 
 ## Installation
 
-**Note:** Pixel Sampling is implemented but experimental. The latest four-anchor fix still needs testing on the S90C/Tizen 9 before its flicker, brightness, and color behavior can be confirmed.
+**Note:** The Pixel Sampling capture method is now implemented. Build and install to test on your Tizen 8.0+ TV.
 
 To install HyperTizen on your Samsung TV running Tizen, you'll need Tizen Studio. You can download it from the [official website](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html).
 

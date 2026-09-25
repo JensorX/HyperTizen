@@ -15,6 +15,7 @@ HyperTizen is an experimental fork of a Hyperion/HyperHDR screen capturer for Sa
 - **T9 Display Capture** = capture test returned `-2` on the S90C
 - **T8/T7 SDK Capture Methods** = scaffolding exists; not selected on the tested device
 - **Pixel Sampling** = selected on the S90C/Tizen 9 via `ppi_ve_*`; code now uses four edge anchors and correctly reads each batch before reusing the two native slots. The updated build still requires hardware retesting.
+- **Pixel Sampling** = selected on the S90C/Tizen 9 via `ppi_ve_*`; code uses four edge anchors and reads each two-slot batch before reusing the slots. It holds valid samples for up to 250ms and estimates missing edges from the nearest reliable edge when at least two anchors remain; fewer than two returns per-edge native error details. The updated build still requires hardware retesting.
 
 **Critical Constraint:** Always verify methods on actual TV hardware - emulator testing is not reliable. Different Tizen firmware versions may have different API availability.
 
@@ -90,6 +91,8 @@ Five Capture Methods (Priority Order):
    ├─ libvideoenhance.so
    ├─ `ppi_ve_*` API on the tested Tizen 9 S90C
    ├─ Two slots, 20ms per batch; four edge anchors require two batches (~25 FPS max)
+   ├─ Holds recent samples briefly; estimates missing edges only when at least two anchors remain
+   ├─ Fails with per-edge native error details when fewer than two anchors are reliable
    ├─ Hardware availability and returned colors vary by firmware/content
    └─ See: HyperTizen/Capture/PixelSamplingCaptureMethod.cs
 ```

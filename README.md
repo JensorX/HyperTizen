@@ -28,6 +28,9 @@ This fork is focused on implementing screen capture functionality for **Tizen 8.
 - Sampling now uses four edge anchors. Each set/wait/read batch is completed before reusing the two native slots; left/right are sampled together, then top/bottom.
 - Two 20ms batches imply a theoretical maximum of about 25 frames/s before processing overhead. Actual TV throughput has not yet been measured.
 - Brief native read errors reuse a recent valid sample; abrupt color changes are briefly confirmed to suppress one-frame spikes. These filters and the four-edge mapping still need real-TV validation.
+- Recent (up to 250ms) valid edge samples are reused through transient errors. If at least two anchors remain reliable, missing edges are estimated from the nearest reliable perimeter anchor; capture fails with per-edge operation/result details if fewer than two remain.
+- Abrupt color changes are briefly confirmed to suppress one-frame spikes. The filters and four-edge mapping still need real-TV validation.
+- Periodic diagnostics include capture timing, per-edge sample-error summaries, and the `estimated=` anchor count.
 - 10-bit RGB is converted to NV12/FlatBuffers. Color range and the existing BT.2020 matrix remain uncalibrated against HyperHDR.
 
 **Tizen 9 S90C capture results:** T9 Video Capture entry points were present but its capture tests returned `-1`; T9 Display Capture returned `-2`. Neither was selected. Pixel Sampling was the working method in the supplied log.

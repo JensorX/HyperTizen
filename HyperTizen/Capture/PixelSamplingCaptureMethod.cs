@@ -55,6 +55,7 @@ namespace HyperTizen.Capture
         private bool[] _hasPendingColors = new bool[EdgeAnchorCount];
         private int[] _pendingSampleCounts = new int[EdgeAnchorCount];
         private long[] _lastSuccessfulSampleTimestamps = new long[EdgeAnchorCount];
+        private int[] _anchorErrorCounts = new int[EdgeAnchorCount];
 
         private long _lastSamplingErrorLogTimestamp;
         private long _lastSampleSummaryTimestamp;
@@ -598,15 +599,19 @@ namespace HyperTizen.Capture
         /// Sample pixel colors from predefined screen positions
         /// Samples each configured hardware-slot batch before reusing its slots.
         /// </summary>
-        private Color[] GetColors(out bool allPointsAvailable)
+        private Color[] GetColors(out bool hasUsableSamples, out string unavailableReason)
         {
             long captureStarted = Stopwatch.GetTimestamp();
-            allPointsAvailable = false;
+            hasUsableSamples = false;
+            unavailableReason = null;
             Color[] colorData = new Color[_capturedPoints.Length];
             Color[] rawSamples = new Color[_capturedPoints.Length];
+            bool[] estimatedSamples = new bool[_capturedPoints.Length];
+            string[] sampleErrors = new string[_capturedPoints.Length];
 
             if (!IsConditionValid() || _pixelCoordinates == null || _pixelCoordinates.Length != _capturedPoints.Length)
             {
+                unavailableReason = "invalid capture condition or missing coordinates";
                 return null;
             }
 
@@ -639,6 +644,8 @@ namespace HyperTizen.Capture
                     else
                     {
                         _positionErrorsSinceLog++;
+                        _anchorErrorCounts[pointIndex]++;
+                        sampleErrors[pointIndex] = $"position={result}";
                         DiscardPendingSample(pointIndex);
                     }
                 }
@@ -661,6 +668,8 @@ namespace HyperTizen.Capture
                     if (result < 0)
                     {
                         _pixelErrorsSinceLog++;
+                        _anchorErrorCounts[pointIndex]++;
+                        sampleErrors[pointIndex] = $"pixel={result}";
                         DiscardPendingSample(pointIndex);
                         continue;
                     }
@@ -670,6 +679,8 @@ namespace HyperTizen.Capture
                         sample.B < 0 || sample.B > 1023)
                     {
                         _invalidSamplesSinceLog++;
+                        _anchorErrorCounts[pointIndex]++;
+                        sampleErrors[pointIndex] = $"invalidRGB10=({sample.R},{sample.G},{sample.B})";
                         DiscardPendingSample(pointIndex);
                         continue;
                     }
@@ -685,11 +696,14 @@ namespace HyperTizen.Capture
             }
 
             long now = Stopwatch.GetTimestamp();
-            allPointsAvailable = true;
+            bool[] reliableSamples = new bool[colorData.Length];
+            int reliableSampleCount = 0;
             for (int pointIndex = 0; pointIndex < colorData.Length; pointIndex++)
             {
                 if (freshSamples[pointIndex])
                 {
+                    reliableSamples[pointIndex] = true;
+                    reliableSampleCount++;
                     continue;
                 }
 
@@ -698,16 +712,89 @@ namespace HyperTizen.Capture
                 {
                     // Keep a brief, last-known-good value through transient API errors.
                     colorData[pointIndex] = _lastFilteredColors[pointIndex];
-                }
-                else
-                {
-                    allPointsAvailable = false;
+                    reliableSamples[pointIndex] = true;
+                    reliableSampleCount++;
                 }
             }
 
+            // If one or more anchors are missing on startup or after a long native
+            // error, estimate only those edges from the nearest reliable perimeter
+            // anchor. Never turn one failed slot into a black whole-frame drop.
+            if (reliableSampleCount >= 2)
+            {
+                for (int pointIndex = 0; pointIndex < colorData.Length; pointIndex++)
+                {
+                    if (reliableSamples[pointIndex])
+                    {
+                        continue;
+                    }
+
+                    int nearestReliable = FindNearestReliableAnchor(pointIndex, reliableSamples);
+                    colorData[pointIndex] = colorData[nearestReliable];
+                    estimatedSamples[pointIndex] = true;
+                }
+
+                hasUsableSamples = true;
+            }
+            else
+            {
+                unavailableReason = BuildUnavailableReason(reliableSamples, sampleErrors);
+            }
+
             LogSamplingErrorSummary(now);
-            LogSampleSummary(now, captureStarted, rawSamples, colorData, freshSamples, allPointsAvailable);
+            LogSampleSummary(now, captureStarted, rawSamples, colorData, freshSamples, estimatedSamples, hasUsableSamples);
             return colorData;
+        }
+
+        private static int FindNearestReliableAnchor(int pointIndex, bool[] reliableSamples)
+        {
+            for (int distance = 1; distance < reliableSamples.Length; distance++)
+            {
+                int clockwise = (pointIndex + distance) % reliableSamples.Length;
+                if (reliableSamples[clockwise])
+                {
+                    return clockwise;
+                }
+
+                int counterClockwise = (pointIndex - distance + reliableSamples.Length) % reliableSamples.Length;
+                if (reliableSamples[counterClockwise])
+                {
+                    return counterClockwise;
+                }
+            }
+
+            throw new InvalidOperationException("PixelSampling: No reliable anchor available for fallback");
+        }
+
+        private string BuildUnavailableReason(bool[] reliableSamples, string[] sampleErrors)
+        {
+            string[] edgeNames = new string[] { "top", "right", "bottom", "left" };
+            System.Text.StringBuilder reason = new System.Text.StringBuilder("fewer than two reliable edge anchors; unavailable=");
+            bool first = true;
+
+            for (int pointIndex = 0; pointIndex < reliableSamples.Length; pointIndex++)
+            {
+                if (reliableSamples[pointIndex])
+                {
+                    continue;
+                }
+
+                if (!first)
+                {
+                    reason.Append(",");
+                }
+
+                reason.Append(edgeNames[pointIndex]);
+                reason.Append('(');
+                reason.Append(sampleErrors[pointIndex] ?? "no recent successful sample");
+                reason.Append(", errorsSinceLastSummary=");
+                reason.Append(_anchorErrorCounts[pointIndex]);
+                reason.Append(")");
+                first = false;
+            }
+
+            reason.Append($"; slots={_condition.ScreenCapturePoints}");
+            return reason.ToString();
         }
 
         private Color FilterSample(int pointIndex, Color sample)
@@ -830,11 +917,14 @@ namespace HyperTizen.Capture
 
             Helper.Log.Write(Helper.eLogType.Warning,
                 $"PixelSampling: Sample errors in interval - position={_positionErrorsSinceLog}, " +
-                $"pixel={_pixelErrorsSinceLog}, invalidColor={_invalidSamplesSinceLog}");
+                $"pixel={_pixelErrorsSinceLog}, invalidColor={_invalidSamplesSinceLog}; " +
+                $"anchorErrors T/R/B/L={_anchorErrorCounts[0]}/{_anchorErrorCounts[1]}/" +
+                $"{_anchorErrorCounts[2]}/{_anchorErrorCounts[3]}");
 
             _positionErrorsSinceLog = 0;
             _pixelErrorsSinceLog = 0;
             _invalidSamplesSinceLog = 0;
+            Array.Clear(_anchorErrorCounts, 0, _anchorErrorCounts.Length);
             _lastSamplingErrorLogTimestamp = now;
         }
 
@@ -844,9 +934,10 @@ namespace HyperTizen.Capture
             Color[] rawSamples,
             Color[] outputColors,
             bool[] freshSamples,
-            bool allPointsAvailable)
+            bool[] estimatedSamples,
+            bool hasUsableSamples)
         {
-            if (!allPointsAvailable)
+            if (!hasUsableSamples)
             {
                 return;
             }
@@ -863,20 +954,40 @@ namespace HyperTizen.Capture
                 $"R={FormatColor(rawSamples[1], freshSamples[1])} " +
                 $"B={FormatColor(rawSamples[2], freshSamples[2])} " +
                 $"L={FormatColor(rawSamples[3], freshSamples[3])}; " +
-                $"filtered T={FormatColor(outputColors[0], true)} " +
-                $"R={FormatColor(outputColors[1], true)} " +
-                $"B={FormatColor(outputColors[2], true)} " +
-                $"L={FormatColor(outputColors[3], true)}; " +
+                $"filtered T={FormatColor(outputColors[0], true, estimatedSamples[0])} " +
+                $"R={FormatColor(outputColors[1], true, estimatedSamples[1])} " +
+                $"B={FormatColor(outputColors[2], true, estimatedSamples[2])} " +
+                $"L={FormatColor(outputColors[3], true, estimatedSamples[3])}; " +
                 $"slots={_condition.ScreenCapturePoints}, sampling={samplingMilliseconds:F1}ms, " +
+                $"estimated={CountEstimatedSamples(estimatedSamples)}, " +
                 $"abruptCandidates={_abruptCandidatesSinceSummary}");
 
             _lastSampleSummaryTimestamp = now;
             _abruptCandidatesSinceSummary = 0;
         }
 
-        private static string FormatColor(Color color, bool isAvailable)
+        private static int CountEstimatedSamples(bool[] estimatedSamples)
         {
-            return isAvailable ? $"({color.R},{color.G},{color.B})" : "unavailable";
+            int count = 0;
+            for (int i = 0; i < estimatedSamples.Length; i++)
+            {
+                if (estimatedSamples[i])
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static string FormatColor(Color color, bool isAvailable, bool isEstimated = false)
+        {
+            if (!isAvailable)
+            {
+                return "unavailable";
+            }
+
+            return isEstimated ? $"({color.R},{color.G},{color.B})*" : $"({color.R},{color.G},{color.B})";
         }
 
         /// <summary>
@@ -1186,12 +1297,13 @@ namespace HyperTizen.Capture
                 }
 
                 // Sample pixels from screen
-                bool allPointsAvailable;
-                Color[] colors = GetColors(out allPointsAvailable);
+                bool hasUsableSamples;
+                string unavailableReason;
+                Color[] colors = GetColors(out hasUsableSamples, out unavailableReason);
 
-                if (colors == null || colors.Length != _capturedPoints.Length || !allPointsAvailable)
+                if (colors == null || colors.Length != _capturedPoints.Length || !hasUsableSamples)
                 {
-                    return CaptureResult.CreateFailure("PixelSampling: One or more edge samples are unavailable");
+                    return CaptureResult.CreateFailure($"PixelSampling: Capture samples unavailable ({unavailableReason ?? "unknown reason"})");
                 }
 
                 // Convert to NV12 format
@@ -1219,6 +1331,7 @@ namespace HyperTizen.Capture
             Array.Clear(_hasPendingColors, 0, _hasPendingColors.Length);
             Array.Clear(_pendingSampleCounts, 0, _pendingSampleCounts.Length);
             Array.Clear(_lastSuccessfulSampleTimestamps, 0, _lastSuccessfulSampleTimestamps.Length);
+            Array.Clear(_anchorErrorCounts, 0, _anchorErrorCounts.Length);
             _lastSamplingErrorLogTimestamp = 0;
             _lastSampleSummaryTimestamp = 0;
             _positionErrorsSinceLog = 0;

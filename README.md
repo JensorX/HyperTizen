@@ -152,7 +152,7 @@ The control panel is perfect for:
 ### Known Issues & Testing Needed
 
 **Capture stability and output:**
-- The capture loop now rejects one-frame outliers, smooths Y/UV over time, serializes frame/reply traffic, and caps updates at 30 FPS.
+- The capture loop rejects one-frame outliers, applies a shadow lift (limited-range Y 0–50% maps to about 50–70%, corresponding roughly to CMYK K 50–100 → K 30–50), smooths Y/UV more slowly, serializes frame/reply traffic, and caps updates at 30 FPS.
 - Pixel sampling keeps separate edge samples; failed readings reuse the last good value instead of inserting black.
 - The pixel-sampling image uses limited-range BT.709 NV12 and extends edge colors inward to avoid black interior pixels dimming HyperHDR's sample areas.
 - These code changes are not yet verified on the user's TV. Confirm the selected method and compare the per-edge RGB ranges plus first-frame Y range/mean in WebSocket logs; if capture values vary but LEDs remain uniform/dim, check HyperHDR's LED layout, image-processing/smoothing, brightness limit, and effect priority.

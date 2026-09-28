@@ -14,7 +14,7 @@ HyperTizen is an experimental fork of a Hyperion/HyperHDR screen capturer for Sa
 - The project targets Tizen 9 (`tizen90`); hardware behavior must be confirmed on the actual TV.
 - `CaptureMethodSelector` tries T9Video → T9Display → T8SDK → T7SDK → PixelSampling; the startup log records the selected method.
 - T8/T7 are fallback scaffolding. T9 methods are firmware-dependent candidates.
-- PixelSampling is implemented. Recent code fixes serialize sample batches, preserve separate edge colors, filter temporal outliers, and stabilize frame delivery; hardware validation remains pending.
+- PixelSampling is implemented. Recent code fixes serialize sample batches, preserve separate edge colors, lift deep-shadow luma to a moderate floor, soften temporal color changes, filter outliers, and stabilize frame delivery; hardware validation remains pending.
 
 **Critical Constraint:** Always verify methods on actual TV hardware - emulator testing is not reliable. Different Tizen firmware versions may have different API availability.
 

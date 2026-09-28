@@ -3,14 +3,17 @@ using System;
 namespace HyperTizen.Capture
 {
     /// <summary>
-    /// Rejects isolated one-frame noise and smooths small temporal changes in NV12 planes.
+    /// Rejects isolated one-frame noise, lifts deep shadows, and smooths temporal changes in NV12.
     /// Large changes use a faster blend so scene cuts do not remain visibly stale.
     /// </summary>
     public sealed class FrameTemporalFilter
     {
         private const int FastChangeThreshold = 48;
-        private const float StableAlpha = 0.22f;
-        private const float FastAlpha = 0.55f;
+        private const float StableAlpha = 0.14f;
+        private const float FastAlpha = 0.28f;
+        private const float ShadowLumaFloor = 0.50f;
+        private const float LumaKneeInput = 0.50f;
+        private const float LumaKneeOutput = 0.70f;
 
         private byte[] _previousRawY;
         private byte[] _filteredY;
@@ -34,8 +37,8 @@ namespace HyperTizen.Capture
                 return;
             }
 
-            FilterPlane(frame.YData, _previousRawY, _filteredY);
-            FilterPlane(frame.UVData, _previousRawUv, _filteredUv);
+            FilterPlane(frame.YData, _previousRawY, _filteredY, true);
+            FilterPlane(frame.UVData, _previousRawUv, _filteredUv, false);
         }
 
         public void Reset()
@@ -50,19 +53,28 @@ namespace HyperTizen.Capture
 
         private void Reset(CaptureResult frame)
         {
-            _previousRawY = (byte[])frame.YData.Clone();
-            _filteredY = (byte[])frame.YData.Clone();
+            _previousRawY = new byte[frame.YData.Length];
+            _filteredY = new byte[frame.YData.Length];
             _previousRawUv = (byte[])frame.UVData.Clone();
             _filteredUv = (byte[])frame.UVData.Clone();
+
+            for (int i = 0; i < frame.YData.Length; i++)
+            {
+                byte liftedValue = LiftShadowLuma(frame.YData[i]);
+                frame.YData[i] = liftedValue;
+                _previousRawY[i] = liftedValue;
+                _filteredY[i] = liftedValue;
+            }
+
             _width = frame.Width;
             _height = frame.Height;
         }
 
-        private static void FilterPlane(byte[] current, byte[] previousRaw, byte[] filtered)
+        private static void FilterPlane(byte[] current, byte[] previousRaw, byte[] filtered, bool isLuma)
         {
             for (int i = 0; i < current.Length; i++)
             {
-                byte rawValue = current[i];
+                byte rawValue = isLuma ? LiftShadowLuma(current[i]) : current[i];
                 byte filteredValue = filtered[i];
                 byte stableValue = Median(rawValue, previousRaw[i], filteredValue);
                 int difference = stableValue - filteredValue;
@@ -77,6 +89,30 @@ namespace HyperTizen.Capture
                 filtered[i] = (byte)output;
                 current[i] = (byte)output;
             }
+        }
+
+        private static byte LiftShadowLuma(byte value)
+        {
+            // NV12 Y is treated as limited range (16..235). Map input luma 0..50%
+            // into output luma 50..70%, analogous to compressing CMYK K=50..100
+            // into K=30..50. The upper half transitions continuously to white.
+            float luma = Math.Max(0, Math.Min(1, (value - 16) / 219.0f));
+            float liftedLuma;
+
+            if (luma <= LumaKneeInput)
+            {
+                float progress = luma / LumaKneeInput;
+                liftedLuma = ShadowLumaFloor +
+                    (LumaKneeOutput - ShadowLumaFloor) * progress;
+            }
+            else
+            {
+                float progress = (luma - LumaKneeInput) / (1.0f - LumaKneeInput);
+                liftedLuma = LumaKneeOutput + (1.0f - LumaKneeOutput) * progress;
+            }
+
+            int output = (int)Math.Round(16 + liftedLuma * 219.0f);
+            return (byte)Math.Max(16, Math.Min(235, output));
         }
 
         private static byte Median(byte first, byte second, byte third)

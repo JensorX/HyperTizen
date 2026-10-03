@@ -157,6 +157,12 @@ The control panel is perfect for:
 - The pixel-sampling image uses limited-range BT.709 NV12 and extends edge colors inward to avoid black interior pixels dimming HyperHDR's sample areas.
 - These code changes are not yet verified on the user's TV. Confirm the selected method and compare the per-edge RGB ranges plus first-frame Y range/mean in WebSocket logs; if capture values vary but LEDs remain uniform/dim, check HyperHDR's LED layout, image-processing/smoothing, brightness limit, and effect priority.
 
+**Source changes / standby (hardware validation pending):**
+- A reported Tizen 9 case freezes parts of the synthetic edge image when switching to/from Nintendo Switch 2 (Game Mode, 120 Hz, HDR); restarting capture restores it. The selected capture method and native error codes during the transition have not yet been recorded, so the root cause is unconfirmed.
+- PixelSampling now refreshes native display conditions every two seconds, recalculates sample positions after geometry changes, and refuses to reuse failed samples older than three seconds. A bounded watchdog reinitializes sampling when parts of the image or the whole image stay unchanged for an extended time. Static scenes can also cause a watchdog reinitialization; this is not a proof of a native fault.
+- Display Off/Normal events now queue capture shutdown/restart in order, with a two-second wake delay, a cleared pause state and a ten-second shutdown wait. This only works **while the Tizen service process remains alive**. If the TV kills the process or never sends a Normal event, it cannot restart itself; an external launcher/autostart mechanism is required.
+- Verify on the actual TV: check `CAPTURE METHOD SELECTED`, `PixelSampling: Display changed`, `PixelSampling: ... reinitializing measurements`, `Display off`, `Display normal`, and `Stop timed out` in the WebSocket logs. Switch to the console and back, then turn the TV off/on without opening the UI. If the log server at port 45678 is unreachable after wake, check whether the service process survived standby. If a T9 frame-capture method was selected instead of PixelSampling, the sampling-specific recovery does not apply.
+
 ### Testing the Pixel Sampling Implementation
 
 To test capture on your Tizen TV (the app targets Tizen 9):

@@ -15,6 +15,9 @@ HyperTizen is an experimental fork of a Hyperion/HyperHDR screen capturer for Sa
 - `CaptureMethodSelector` tries T9Video → T9Display → T8SDK → T7SDK → PixelSampling; the startup log records the selected method.
 - T8/T7 are fallback scaffolding. T9 methods are firmware-dependent candidates.
 - PixelSampling is implemented. Recent code fixes serialize sample batches, preserve separate edge colors, lift deep-shadow luma to a moderate floor, soften temporal color changes, filter outliers, and stabilize frame delivery; hardware validation remains pending.
+- Source switching (Switch 2 Game Mode 120 Hz/HDR) has been reported to freeze parts of the output. PixelSampling now refreshes display condition/coordinates, expires failed cached samples and rate-limits stuck-frame recovery. This is not yet confirmed on hardware; first obtain `CAPTURE METHOD SELECTED` and transition logs.
+- Display Off/Normal transitions now queue Stop/Start, including a wake delay; a dead service process cannot recover itself. Check whether port 45678 responds after wake before diagnosing capture restart.
+- Local build verification is currently blocked: `/usr/bin/dotnet` fails because `/usr/lib64/dotnet/host/fxr` has no versioned runtime. VS Code file diagnostics showed no errors, but a build and TV test remain required.
 
 **Critical Constraint:** Always verify methods on actual TV hardware - emulator testing is not reliable. Different Tizen firmware versions may have different API availability.
 

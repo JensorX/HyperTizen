@@ -9,6 +9,10 @@ namespace HyperTizen
     class App : ServiceApplication
     {
         public static HyperionClient client;
+        private readonly object _displayTransitionLock = new object();
+        private Task _pendingDisplayTransition = Task.CompletedTask;
+        private bool _displayWasOff;
+        private DisplayState _requestedDisplayState = DisplayState.Normal;
         protected override void OnCreate()
         {
             base.OnCreate();
@@ -79,8 +83,9 @@ namespace HyperTizen
             }
 
             // STEP 6: Continue normal startup
-            Display.StateChanged += Display_StateChanged;
             client = new HyperionClient();
+            Display.StateChanged += Display_StateChanged;
+            QueueDisplayTransition(DisplayState.Normal);
 
             // Show service started notification (always shown)
             Notification startNotif = new Notification
@@ -94,12 +99,58 @@ namespace HyperTizen
 
         private void Display_StateChanged(object sender, DisplayStateChangedEventArgs e)
         {
-            if (e.State == DisplayState.Off)
+            QueueDisplayTransition(e.State);
+        }
+
+        private void QueueDisplayTransition(DisplayState state)
+        {
+            if (state != DisplayState.Off && state != DisplayState.Normal) return;
+
+            // Queue in event order: Task.Run plus a semaphore can reverse Off/Normal.
+            lock (_displayTransitionLock)
             {
-                Task.Run(() => client.Stop());
-            } else if (e.State == DisplayState.Normal)
-            {
-                Task.Run(() => client.Start());
+                _requestedDisplayState = state;
+                _pendingDisplayTransition = _pendingDisplayTransition.ContinueWith(async _ =>
+                {
+                    try
+                    {
+                        if (state == DisplayState.Off)
+                        {
+                            _displayWasOff = true;
+                            Helper.Log.Write(Helper.eLogType.Info, "Display off: stopping capture");
+                            await client.Stop();
+                        }
+                        else
+                        {
+                            // HDMI and network services may not be ready immediately on wake.
+                            if (_displayWasOff) await Task.Delay(2000);
+                            lock (_displayTransitionLock)
+                            {
+                                if (_requestedDisplayState != DisplayState.Normal) return;
+                            }
+                            if (_displayWasOff) await client.Stop();
+                            if (client.IsRunning) return;
+                            lock (_displayTransitionLock)
+                            {
+                                if (_requestedDisplayState != DisplayState.Normal) return;
+                            }
+                            _displayWasOff = false;
+                            Helper.Log.Write(Helper.eLogType.Info, "Display normal: starting capture");
+                            _ = Task.Run(async () =>
+                            {
+                                lock (_displayTransitionLock)
+                                {
+                                    if (_requestedDisplayState != DisplayState.Normal) return;
+                                }
+                                await client.Start();
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Helper.Log.Write(Helper.eLogType.Error, $"Display transition failed: {ex.Message}");
+                    }
+                }).Unwrap();
             }
         }
 
@@ -135,6 +186,7 @@ namespace HyperTizen
 
         protected override void OnTerminate()
         {
+            Display.StateChanged -= Display_StateChanged;
             // Show service stopped notification (always shown)
             Notification stopNotif = new Notification
             {

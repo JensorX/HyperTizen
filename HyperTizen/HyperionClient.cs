@@ -49,7 +49,9 @@ namespace HyperTizen
     {
         // Lifecycle management fields
         private CancellationTokenSource _cancellationTokenSource;
-        private bool _isRunning = false;
+        private volatile bool _isRunning = false;
+        private volatile bool _stopRequested = false;
+        private readonly object _startLock = new object();
         private bool _isPaused = false;
         private readonly object _pauseLock = new object();
         private ServiceState _serviceState = ServiceState.Idle;
@@ -70,19 +72,9 @@ namespace HyperTizen
 
         public HyperionClient()
         {
-            Task.Run(async () =>
-            {
-                try
-                {
-                    await Start();
-                }
-                catch (Exception ex)
-                {
-                    Helper.Log.Write(Helper.eLogType.Error,
-                        $"Unhandled exception in Start(): {ex.Message}");
-                }
-            });
         }
+
+        public bool IsRunning => _isRunning;
 
         // Get current service state
         public ServiceState State
@@ -105,25 +97,28 @@ namespace HyperTizen
 
         public async Task Start()
         {
-            try
+            lock (_startLock)
             {
-                // Prevent multiple simultaneous starts
                 if (_isRunning)
                 {
                     Helper.Log.Write(Helper.eLogType.Warning, "HyperionClient already running");
                     return;
                 }
-
+                _isRunning = true;
+                _stopRequested = false;
+            }
+            try
+            {
                 // STEP 1: Early initialization for logging
                 Helper.Log.Write(Helper.eLogType.Info, "=== STEP 1: Service startup ===");
                 State = ServiceState.Starting;
-                _isRunning = true;
                 _startTime = DateTime.Now;
 
                 // STEP 2: Initialize WebSocket logging/control FIRST
                 // This ensures logs are available even in filestealer mode
                 Helper.Log.Write(Helper.eLogType.Info, "=== STEP 2: WebSocket + Config initialization ===");
                 Globals.Instance.SetConfig();
+                if (_stopRequested) return;
                 Helper.Log.Write(Helper.eLogType.Info, "WebSocket server should be running on port 45678");
                 Helper.Log.Write(Helper.eLogType.Info, $"Connect to http://<TV_IP>:45678 to view logs");
 
@@ -218,6 +213,8 @@ namespace HyperTizen
                 // Create new cancellation token source
                 _cancellationTokenSource = new CancellationTokenSource();
 
+                if (_stopRequested) return;
+
                 Helper.Log.Write(Helper.eLogType.Info, "HyperionClient starting normal capture mode...");
 
                 // STEP 3: SSDP scans (already done in SetConfig above)
@@ -257,6 +254,7 @@ namespace HyperTizen
 
                         Helper.Log.Write(Helper.eLogType.Info, "CaptureMethodSelector: Starting capture method selection");
                         _selectedCaptureMethod = _captureSelector.SelectBestMethod();
+                        if (_stopRequested) return;
 
                         if (_selectedCaptureMethod == null)
                         {
@@ -403,6 +401,8 @@ namespace HyperTizen
                 }
 
                 // STEP 8: Start capture loop
+                if (_stopRequested || _cancellationTokenSource.Token.IsCancellationRequested)
+                    return;
                 Helper.Log.Write(Helper.eLogType.Info, "=== STEP 8: Starting main capture loop ===");
                 State = ServiceState.Capturing;
 
@@ -669,10 +669,15 @@ namespace HyperTizen
         public async Task Stop()
         {
             Helper.Log.Write(Helper.eLogType.Info, "Stopping HyperionClient...");
+            _stopRequested = true;
             State = ServiceState.Stopping;
 
             // Set global enabled flag to false
             Globals.Instance.Enabled = false;
+            lock (_pauseLock)
+            {
+                _isPaused = false;
+            }
 
             // Cancel the cancellation token source
             if (_cancellationTokenSource != null)
@@ -687,25 +692,27 @@ namespace HyperTizen
                     Helper.Log.Write(Helper.eLogType.Warning,
                         $"Error cancelling token: {ex.Message}");
                 }
+            }
 
-                // Wait for graceful shutdown with timeout
-                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                while (_isRunning && stopwatch.ElapsedMilliseconds < 5000)
-                {
-                    await Task.Delay(100);
-                }
+            // Also wait if startup has not created its cancellation token yet.
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            while (_isRunning && stopwatch.ElapsedMilliseconds < 10000)
+            {
+                await Task.Delay(100);
+            }
 
-                if (_isRunning)
-                {
-                    Helper.Log.Write(Helper.eLogType.Warning,
-                        "Force stopped after timeout - capture loop may still be running");
-                }
-                else
-                {
-                    Helper.Log.Write(Helper.eLogType.Info,
-                        $"Graceful shutdown completed in {stopwatch.ElapsedMilliseconds}ms");
-                }
+            if (_isRunning)
+            {
+                Helper.Log.Write(Helper.eLogType.Warning,
+                    "Stop timed out; capture is still running, leaving its resources intact");
+                return;
+            }
 
+            Helper.Log.Write(Helper.eLogType.Info,
+                $"Graceful shutdown completed in {stopwatch.ElapsedMilliseconds}ms");
+
+            if (_cancellationTokenSource != null)
+            {
                 // Dispose of cancellation token source
                 try
                 {

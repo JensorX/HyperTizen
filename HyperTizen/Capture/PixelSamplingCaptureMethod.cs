@@ -56,11 +56,9 @@ namespace HyperTizen.Capture
         };
         private Color[] _lastGoodColors = new Color[16];
         private bool[] _hasLastGoodColors = new bool[16];
-        private DateTime[] _lastValidSampleUtc = new DateTime[16];
-        private DateTime _lastConditionCheckUtc = DateTime.MinValue;
-        private DateTime _lastRecoveryUtc = DateTime.MinValue;
         private DateTime _partialStallSinceUtc = DateTime.MinValue;
-        private DateTime _allStaticSinceUtc = DateTime.MinValue;
+        private DateTime _lastReinitializationUtc = DateTime.MinValue;
+        private DateTime _retryInitializationAfterUtc = DateTime.MinValue;
         private bool _hasLoggedSampleRange = false;
         private DateTime _lastSamplingErrorLog = DateTime.MinValue;
 
@@ -587,40 +585,6 @@ namespace HyperTizen.Capture
                 $"PixelSampling: Pre-calculated {_pixelCoordinates.Length} pixel coordinates");
         }
 
-        private int RefreshCondition(out Condition condition)
-        {
-            string key = $"{_workingVariant}_{_workingLibPath}";
-            switch (key)
-            {
-                case "T6_SO": return MeasureCondition_T6_SO(out condition);
-                case "T6_SO0": return MeasureCondition_T6_SO0(out condition);
-                case "T7_SO": return MeasureCondition_T7_SO(out condition);
-                case "T7_SO0": return MeasureCondition_T7_SO0(out condition);
-                case "T9A_SO": return MeasureCondition_T9A_SO(out condition);
-                case "T9A_SO0": return MeasureCondition_T9A_SO0(out condition);
-                case "T9B_SO": return MeasureCondition_T9B_SO(out condition);
-                case "T9B_SO0": return MeasureCondition_T9B_SO0(out condition);
-                case "T9C_SO": return MeasureCondition_T9C_SO(out condition);
-                case "T9C_SO0": return MeasureCondition_T9C_SO0(out condition);
-                case "T9_SO": return MeasureCondition_T9_SO(out condition);
-                case "T9_SO0": return MeasureCondition_T9_SO0(out condition);
-                default: throw new InvalidOperationException($"Unknown variant: {key}");
-            }
-        }
-
-        private void ResetSampling(string reason)
-        {
-            Helper.Log.Write(Helper.eLogType.Warning, $"PixelSampling: {reason}; reinitializing measurements");
-            _isInitialized = false;
-            _pixelCoordinates = null;
-            _lastGoodColors = new Color[_capturedPoints.Length];
-            _hasLastGoodColors = new bool[_capturedPoints.Length];
-            _lastValidSampleUtc = new DateTime[_capturedPoints.Length];
-            _partialStallSinceUtc = DateTime.MinValue;
-            _allStaticSinceUtc = DateTime.MinValue;
-            _lastRecoveryUtc = DateTime.UtcNow;
-        }
-
         /// <summary>
         /// Sample the edge points in batches no larger than the native measurement capacity.
         /// A batch must be read before its native slots are reused for the next batch.
@@ -630,6 +594,7 @@ namespace HyperTizen.Capture
             Color[] colorData = new Color[_capturedPoints.Length];
             int changedPoints = 0;
             int unchangedPoints = 0;
+            int invalidSampleCount = 0;
             DateTime now = DateTime.UtcNow;
 
             int batchCapacity = _condition.ScreenCapturePoints;
@@ -702,6 +667,11 @@ namespace HyperTizen.Capture
                         }
                     }
 
+                    if (!sampleValid)
+                    {
+                        invalidSampleCount++;
+                    }
+
                     if (sampleValid)
                     {
                         if (_hasLastGoodColors[pointIndex])
@@ -714,18 +684,15 @@ namespace HyperTizen.Capture
                         }
                         _lastGoodColors[pointIndex] = color;
                         _hasLastGoodColors[pointIndex] = true;
-                        _lastValidSampleUtc[pointIndex] = now;
                     }
-                    else if (_hasLastGoodColors[pointIndex] &&
-                             (now - _lastValidSampleUtc[pointIndex]).TotalSeconds < 3)
+                    else if (_hasLastGoodColors[pointIndex])
                     {
                         // Keep the previous valid sample instead of injecting a black flash.
                         color = _lastGoodColors[pointIndex];
                     }
                     else
                     {
-                        ResetSampling($"point {pointIndex} has no recent valid reading");
-                        return null;
+                        continue;
                     }
 
                     colorData[pointIndex] = color;
@@ -737,19 +704,29 @@ namespace HyperTizen.Capture
             {
                 Helper.Log.Write(Helper.eLogType.Warning,
                     "PixelSampling: No valid samples available; dropping this frame");
+                ReinitializeMeasurements("no valid samples");
                 return null;
             }
 
-            // A persistently static section next to moving sections can indicate native
-            // measurement slots stuck after a source/HDR mode change. Do not infer this
-            // from a single frame or an entirely static picture.
+            if (invalidSampleCount >= Math.Max(2, _capturedPoints.Length / 4))
+            {
+                ReinitializeMeasurements($"{invalidSampleCount} sample readings failed");
+                return null;
+            }
+
+            // A source/HDR switch can leave only part of the native measurement
+            // slots returning their old values while other points change.
             if (changedPoints >= 4 && unchangedPoints >= 4)
             {
-                if (_partialStallSinceUtc == DateTime.MinValue) _partialStallSinceUtc = now;
-                if ((now - _partialStallSinceUtc).TotalSeconds >= 15 &&
-                    (now - _lastRecoveryUtc).TotalSeconds >= 60)
+                if (_partialStallSinceUtc == DateTime.MinValue)
                 {
-                    ResetSampling("some edge samples stayed static while others changed for 15s");
+                    _partialStallSinceUtc = now;
+                }
+
+                if ((now - _partialStallSinceUtc).TotalSeconds >= 3 &&
+                    (now - _lastReinitializationUtc).TotalSeconds >= 10)
+                {
+                    ReinitializeMeasurements("partially stalled edge samples");
                     return null;
                 }
             }
@@ -758,21 +735,28 @@ namespace HyperTizen.Capture
                 _partialStallSinceUtc = DateTime.MinValue;
             }
 
-            // A native API can keep reporting success while returning an old picture.
-            // A legitimately still screen may also trigger this: rate-limit recovery.
-            if (unchangedPoints == _capturedPoints.Length)
+            // On the first frame, fill any never-valid point from its nearest valid neighbor.
+            // This avoids introducing black wedges when only part of a native batch fails.
+            for (int pointIndex = 0; pointIndex < colorData.Length; pointIndex++)
             {
-                if (_allStaticSinceUtc == DateTime.MinValue) _allStaticSinceUtc = now;
-                if ((now - _allStaticSinceUtc).TotalSeconds >= 30 &&
-                    (now - _lastRecoveryUtc).TotalSeconds >= 120)
+                if (_hasLastGoodColors[pointIndex])
                 {
-                    ResetSampling("all edge samples remained identical for 30s");
-                    return null;
+                    continue;
                 }
-            }
-            else
-            {
-                _allStaticSinceUtc = DateTime.MinValue;
+
+                for (int distance = 1; distance < colorData.Length; distance++)
+                {
+                    int before = (pointIndex - distance + colorData.Length) % colorData.Length;
+                    int after = (pointIndex + distance) % colorData.Length;
+                    int neighbor = _hasLastGoodColors[before] ? before :
+                        (_hasLastGoodColors[after] ? after : -1);
+
+                    if (neighbor >= 0)
+                    {
+                        colorData[pointIndex] = _lastGoodColors[neighbor];
+                        break;
+                    }
+                }
             }
 
             if (!_hasLoggedSampleRange)
@@ -831,6 +815,19 @@ namespace HyperTizen.Capture
 
             _lastSamplingErrorLog = now;
             Helper.Log.Write(Helper.eLogType.Warning, message);
+        }
+
+        private void ReinitializeMeasurements(string reason)
+        {
+            Helper.Log.Write(Helper.eLogType.Warning,
+                $"PixelSampling: {reason}; reinitializing measurement slots");
+            _isInitialized = false;
+            _pixelCoordinates = null;
+            _lastGoodColors = new Color[_capturedPoints.Length];
+            _hasLastGoodColors = new bool[_capturedPoints.Length];
+            _partialStallSinceUtc = DateTime.MinValue;
+            _lastReinitializationUtc = DateTime.UtcNow;
+            _retryInitializationAfterUtc = _lastReinitializationUtc.AddSeconds(1);
         }
 
         /// <summary>
@@ -974,6 +971,11 @@ namespace HyperTizen.Capture
                 // Initialize if not already done
                 if (!_isInitialized)
                 {
+                    if (DateTime.UtcNow < _retryInitializationAfterUtc)
+                    {
+                        return CaptureResult.CreateFailure("PixelSampling: Waiting before measurement retry");
+                    }
+
                     if (!GetCondition())
                     {
                         return CaptureResult.CreateFailure("PixelSampling: Failed to get condition");
@@ -983,41 +985,6 @@ namespace HyperTizen.Capture
                     PreCalculateCoordinates();
 
                     _isInitialized = true;
-                }
-
-                DateTime now = DateTime.UtcNow;
-                if ((now - _lastConditionCheckUtc).TotalSeconds >= 2)
-                {
-                    _lastConditionCheckUtc = now;
-                    Condition current;
-                    int result = RefreshCondition(out current);
-                    if (result < 0 || current.Width <= 0 || current.Height <= 0 ||
-                        current.ScreenCapturePoints <= 0)
-                    {
-                        ResetSampling($"measurement condition unavailable (result {result})");
-                        return CaptureResult.CreateFailure("PixelSampling: Display condition unavailable");
-                    }
-
-                    if (current.Width != _condition.Width || current.Height != _condition.Height ||
-                        current.ScreenCapturePoints != _condition.ScreenCapturePoints ||
-                        current.PixelDensityX != _condition.PixelDensityX ||
-                        current.PixelDensityY != _condition.PixelDensityY)
-                    {
-                        Helper.Log.Write(Helper.eLogType.Info,
-                            $"PixelSampling: Display changed from {_condition.Width}x{_condition.Height} " +
-                            $"to {current.Width}x{current.Height}, slots {_condition.ScreenCapturePoints}->{current.ScreenCapturePoints}");
-                        _condition = current;
-                        PreCalculateCoordinates();
-                        _lastGoodColors = new Color[_capturedPoints.Length];
-                        _hasLastGoodColors = new bool[_capturedPoints.Length];
-                        _lastValidSampleUtc = new DateTime[_capturedPoints.Length];
-                        _partialStallSinceUtc = DateTime.MinValue;
-                        _allStaticSinceUtc = DateTime.MinValue;
-                    }
-                    else
-                    {
-                        _condition = current;
-                    }
                 }
 
                 // Sample pixels from screen
@@ -1049,11 +1016,9 @@ namespace HyperTizen.Capture
             _pixelCoordinates = null;
             _lastGoodColors = new Color[_capturedPoints.Length];
             _hasLastGoodColors = new bool[_capturedPoints.Length];
-            _lastValidSampleUtc = new DateTime[_capturedPoints.Length];
-            _lastConditionCheckUtc = DateTime.MinValue;
-            _lastRecoveryUtc = DateTime.MinValue;
             _partialStallSinceUtc = DateTime.MinValue;
-            _allStaticSinceUtc = DateTime.MinValue;
+            _lastReinitializationUtc = DateTime.MinValue;
+            _retryInitializationAfterUtc = DateTime.MinValue;
             _hasLoggedSampleRange = false;
             _lastSamplingErrorLog = DateTime.MinValue;
             Helper.Log.Write(Helper.eLogType.Debug, "PixelSampling: Cleaned up");
